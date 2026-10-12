@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <dlfcn.h>
 
-#include <functional>
 #include <string>
 
 template <class FType>
@@ -40,7 +39,9 @@ struct OriginalFunction{
     return func(args...);
   }
 
-  std::function<FType> func;
+  // Store the dlsym result directly; target<FType>() was always null
+  // because the std::function stored FType*, not the function type.
+  FType* func{nullptr};
   void* dl_handle{nullptr};
   
 }; // struct OriginalFunction
@@ -74,6 +75,12 @@ inline auto XShmCreatePixmapFunc = OriginalFunction<XShmCreatePixmapType>{"XShmC
 
 using XDamageCreateType = Damage(Display*, Drawable, int);
 inline auto XDamageCreateFunc = OriginalFunction<XDamageCreateType>{"XDamageCreate", "libXdamage.so"};
+
+using XDamageDestroyType = void(Display*, Damage);
+inline auto XDamageDestroyFunc = OriginalFunction<XDamageDestroyType>{"XDamageDestroy", "libXdamage.so"};
+
+using XCloseDisplayType = int(Display*);
+inline auto XCloseDisplayFunc = OriginalFunction<XCloseDisplayType>{"XCloseDisplay", "libX11.so.6"};
 
 using XCompositeRedirectWindowType = void(Display*, Window, int);
 inline auto XCompositeRedirectWindowFunc = OriginalFunction<XCompositeRedirectWindowType>{"XCompositeRedirectWindow", "libXcomposite.so"};

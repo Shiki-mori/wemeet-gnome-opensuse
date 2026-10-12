@@ -20,15 +20,15 @@
 - 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
 - `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
 
-## 此前采用的链路（阶段性方案）
+## 当前启动设置与钩子设计（capture-v2，会议验证待完成）
 
-从应用菜单启动 `wemeetapp`。进程始终走 X11 开会，屏幕共享只走这条路：
+从应用菜单启动 `wemeetapp`。启动器目前把客户端环境设置为 X11，钩子的目标链路如下；客户端是否实际进入这条链路，需要按每次运行的日志确认。历史记录中也有客户端自身 `ext_portal` 路径成功送帧的情况。
 
 1. `WEMEET_XWAYLAND=1`，`XDG_SESSION_TYPE=x11`，`QT_QPA_PLATFORM=xcb`。
-2. 钩子在构造函数里记下 `WAYLAND_DISPLAY`，之后整个进程都看不到 Wayland 会话。
-3. 客户端用 X11 截图（`XGetImage` / `XShmGetImage` / `XShmAttach`）。
-4. 钩子弹出 GNOME 选屏，选完后把 PipeWire 画面填进截图。
-5. 停止共享时拆掉这次门户会话，下次再共享要重新选屏。
+2. 钩子在构造函数里保存并清除 `WAYLAND_DISPLAY`，同时拦截 `getenv` 保持上述环境设置。当前门户代码不再恢复这个全进程变量；其他会话检测方式仍需独立分析。
+3. 客户端调用被拦截的 X11 截图函数时，钩子尝试启动门户。目前图像尺寸判断是宽度至少 640、高度至少 360；XShm 段跟踪也参与触发。
+4. 钩子在自己的 `GMainContext` 中创建门户会话、弹出 GNOME 选屏，等真实 PipeWire 首帧到达后填入 XImage 或共享内存图像。当前屏幕图像分支会直接填充画面，其他原函数正常转调。
+5. 相关 XShm 段分离、XDamage 对象销毁或采集 Display 关闭会请求清理；门户外部关闭和错误也会结束会话。停止共享、再次共享是否实际触发这些信号，尚需会议验证。
 
 `libhook.so` 必须和 `wemeetapp` 放在同一目录。启动器找不到它就退出。
 
@@ -36,29 +36,27 @@
 
 以下是此前在这台机器上记录的问题与原因判断。现象相同时可先参考这些记录，再结合当前证据重新分析；相似现象不保证原因相同，也不排除尝试其他采集路径。
 
-- **官方启动脚本在 Wayland 下伪装成 X11。** 它设置 `WEMEET_XWAYLAND=1`、`XDG_SESSION_TYPE=x11`，并清掉 `WAYLAND_DISPLAY`。麦克风和摄像头正常，屏幕共享走 X11 截图，看不见 Wayland 窗口，也没有 GNOME 选屏。
-- **保留 Wayland 会话可以共享，但重启后快速会议闪退。** 2026-08-31 用 `XDG_SESSION_TYPE=wayland` 且不设置 `WEMEET_XWAYLAND` 时，快速会议、麦克风、摄像头和 GNOME 选屏都可用。BIOS 升级并重启后，快速会议在 `libwemeet_framework.so` 里 SIGSEGV，偏移每次都是 `+0x13d4300`。之后只有官方 X11 路径能开会。
-- **`xwaylandvideobridge` 会把桌面涂黑。** 选屏不稳定，未最大化窗口周围的桌面变黑。自启必须用 `~/.config/autostart/org.kde.xwaylandvideobridge.desktop` 里的 `Hidden=true` 关掉。
-- **普通 `LD_PRELOAD` 拦不住 `libxcast.so`。** 它是 `libwemeet_platform.so` 的依赖，X11 函数从它自己的 PLT 绑定。日志里只有 `[ctor]`、没有截屏调用时，就是没补上 PLT。要用 `plthook` 替换 `libxcast.so` 的 PLT。
-- **拦截全部 `dlopen` 会让网页进程崩。** `QtWebEngineProcess` 收到 SIGTRAP。构造函数发现可执行文件名里有 `QtWebEngineProcess` 时必须直接返回。
-- **把 `XDamageQueryExtension` 固定返回 0 会让截图初始化退出。** 这个版本不会因此改走 `XGetImage`。`XDamageCreate` 返回空也一样。
+- **官方脚本的 X11 设置。** 此前检查到它设置 `WEMEET_XWAYLAND=1`、`XDG_SESSION_TYPE=x11`，清除 `WAYLAND_DISPLAY`。当次麦克风、摄像头正常，原生 X11 截图看不到 Wayland 窗口，也未出现 GNOME 选屏。这是当次观察，不代表所有启动方式都会采取同一采集路径。
+- **Wayland 设置下的快速会议崩溃。** 2026-08-31 用 `XDG_SESSION_TYPE=wayland` 且不设置 `WEMEET_XWAYLAND` 时，曾成功开会和共享。BIOS 升级并重启后，多次 SIGSEGV 记录指向 `libwemeet_framework.so +0x13d4300`，当时 X11 设置能开会。时间先后关系不能证明 BIOS 是原因，也不能证明 Wayland 路径永远不可用。
+- **视频桥实验曾出现桌面变黑。** 当时选屏不稳定，未最大化窗口周围的桌面变黑。当前 `~/.config/autostart/org.kde.xwaylandvideobridge.desktop` 通过 `Hidden=true` 禁用自启。是否能通过配置或实现调整解决，未完成验证。
+- **普通预加载未覆盖当次 X11 调用。** `libxcast.so` 的 PLT 绑定曾需要用 `plthook` 替换。只有启动日志不足以确定是 PLT 未补上；还可能是客户端没启动采集、调用了其他分支，或钩子在更早的查询中返回失败。需要同时检查替换结果、原函数地址和客户端日志。
+- **扩大 `dlopen` 拦截实验时出现网页进程崩溃。** 曾记录 `QtWebEngineProcess` 收到 SIGTRAP。当前实现只对指定屏幕共享库做 PLT 替换，并跳过网页进程；历史崩溃的具体触发条件需要结合当次代码和栈分析。
+- **扩展查询失败的影响曾被过度概括。** 旧记录认为 `XDamageQueryExtension` 返回 0 必然让初始化退出。2026-10-12 18:40 日志却同时记录扩展不可用警告、`init.leave.succ` 和后续 `device.busy`。查询失败、XDamage 创建失败、图像读取失败应分别分析，不能据此断言客户端不会尝试其他截图方式。
 - **把 PLT 跳板当成原函数会让 `XShmQueryVersion` 死循环。** 补丁读到的旧地址是 `plt+6`，尾调用又回到钩子自己。CPU 打满，`/tmp/wemeet-hook.log` 曾写到约 1.9 GB。原函数必须用 `dlsym(RTLD_NEXT)`。
-- **对屏幕共享模块隐藏 `WEMEET_XWAYLAND` 会得到空白共享。** 客户端立刻显示「正在共享」，不弹 GNOME 选屏。日志里 `Display_0` 被设成 `external:true`，没有画面送出。第二次再共享也不会再弹选屏。
-- **门户请求发到错误的线程上时，选屏不会出现。** 采集停在 `screen_capture_linux.cc` 的 `init.enter`，没有 `init.leave`。会话要在钩子自己的 `GMainContext` 里创建，创建完成后再 `xdp_session_start`。
-- **选完屏幕后对方仍看到空白。** 一种情况是客户端已经改走外部采集，X11 截图不再被编码。另一种是钩子在 PipeWire 第一帧到达前把截图涂成黑色。`pipewire_fd` 必须在节点号填完之后再发布，否则 `pipewire_node_ids.at(0)` 会抛异常，会话留在半初始化状态，下一次共享不再弹选屏。
-- **同一次安装会走出不同的路。** 2026-10-08 面试时走的是官方 `ext_portal`，约 5 秒后开始有画面，X11 截图线程没有启动。2026-10-12 点共享后只把 `Display_0` 配到「已配置、未开始」，没有 `init.enter`，也没有切到 `ext_portal`，钩子日志里只有补丁记录。这不是补丁被冲掉，是闭源模块当次没有调用截图函数。
-- **应用菜单里找不到腾讯会议。** 桌面文件加了 `TryExec`，GNOME 在启动器还不可执行时检查过一次，就把图标从列表里拿掉，之后不会自动恢复。菜单文件不要写 `TryExec`。
+- **隐藏 `WEMEET_XWAYLAND` 的实验曾出现空白共享。** 当时客户端显示「正在共享」，没有选屏和画面，日志包含 `external:true`，重试也未弹选屏。但外部采集本身并非失败证据：10 月 8 日的 `ext_portal` 路径有首帧和编码记录。需要区分当次环境改动、采集启动和实际帧流向。
+- **门户主上下文未被正确驱动。** 历史实验中，采集停在 `init.enter`、门户回调未执行；将会话创建和启动放入持续驱动的专用 `GMainContext` 后改变了现象。当前代码沿用该设计。选屏不出现仍需检查请求、响应、取消和超时日志。
+- **选屏成功但共享空白有多个候选原因。** 包括钩子画面未进入客户端正在编码的路径、首帧前错误清空像素、PipeWire 连接或格式失败，以及节点列表与 fd 发布顺序错误。此前有 `pipewire_node_ids.at(0)` 异常的记录；当前代码先验证节点和 fd，再发布状态。不能仅凭「已选屏」确认已采集或已送出画面。
+- **同一安装中出现多条采集路径。** 10 月 8 日日志有 `ext_portal` 首帧和编码记录，无 X11 截图初始化。10 月 12 日较早实验有 X11 初始化，也有 `ext_portal` 启动；19:24 的运行仅配置 `Display_0`，没有采集启动记录。最后一种现象表明日志停在启动之前，原因尚未确认；不能排除钩子更早的影响，也不能断言补丁绝未被覆盖。同一日志文件可能包含多轮运行，应按时间和进程区分。
+- **菜单入口与 `TryExec`。** 此前添加 `TryExec` 后曾遇到图标消失，启动器的可执行状态与 GNOME 缓存被怀疑相关，但缓存机制未独立验证。当前菜单文件不设置 `TryExec`。
 
 ## 此前总结的避坑建议（可以重新评估）
 
-- 不要对屏幕共享模块隐藏 `WEMEET_XWAYLAND`，也不要让它看到 `WAYLAND_DISPLAY`。那样会立刻显示「正在共享」、不弹选屏、画面全黑。
-- 不要把 `XDamageQueryExtension` 或 `XDamageCreate` 固定返回失败。这个客户端会因此放弃截图初始化。
-- 不要把 PLT 里尚未绑定的跳板地址当成原函数再调用。`XShmQueryVersion` 会因此死循环，并把日志写满。
-- 原函数用 `dlsym(RTLD_NEXT)` 取到的 libX11 / libXext 符号。
-- 在 PipeWire 还没有送出第一帧之前，不要把截图像素涂黑。
-- 不要在钩子里拦截所有 `dlopen`。`QtWebEngineProcess` 会因此收到 SIGTRAP。构造函数里跳过该进程。
-- 不要改回 `XDG_SESSION_TYPE=wayland` 或清掉 `WEMEET_XWAYLAND` 来开会。这台机器上快速会议会在 `libwemeet_framework.so` 里 SIGSEGV。
-- 不要启用 `xwaylandvideobridge`。它会把 GNOME 桌面涂黑。
+- 以当前 X11 启动设置作为对照基线。改变 `WEMEET_XWAYLAND`、`WAYLAND_DISPLAY` 或会话类型时，记录实际环境、采集路径和首帧结果，避免把几个同时改变的条件归结为一个原因。
+- 扩展查询和创建函数默认如实转调系统实现。若实验改变返回值，分别检查初始化、读图和送帧阶段。
+- 原函数优先用 `dlsym(RTLD_NEXT)` 解析，必要时从明确的系统库句柄解析；确认类型和实际指向，不调用未绑定的 PLT 跳板。
+- 首帧前保持原有像素；当前屏幕图像分支等待首帧或返回失败。记录 PipeWire 的状态和格式，不能把占位黑图当成有效首帧。
+- 扩大动态库拦截范围时关注网页子进程。当前实现跳过 `QtWebEngineProcess`，只补指定库的 PLT。
+- 重试 Wayland 设置或视频桥有探索价值，但要保留能回滚的启动方式，并对照曾出现的崩溃和桌面变黑现象。
 
 ## 改完钩子之后
 
@@ -71,7 +69,24 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 
 正在运行的腾讯会议不会加载新的 `libhook.so`。先彻底退出（包括托盘），再从应用菜单打开。
 
-调试日志在 `/tmp/wemeet-hook.log`。正常共享应出现 `[chain] x11-capture + gnome-portal`，点共享后出现 `[portal] session created` 和 `[portal] first pipewire frame`。只有 `[ctor]` 或 `[chain]`、没有 `[portal]`，说明这次点击没有走到 X11 截图。
+调试日志在 `/tmp/wemeet-hook.log`，当前日志带时间和进程号，启动记录包含 `revision=capture-v2`。只有启动或补丁记录，表示尚未观察到钩子的门户启动；需与同次客户端日志交叉检查，不能单凭日志缺失判断根因。
+
+- `[portal] session created`：门户会话已创建，尚不代表已选屏或已采集。
+- `[portal] first pipewire frame`：钩子已复制一个通过格式与缓冲区检查的帧，尚不代表客户端已编码或对端收到。
+- `[portal] session cleaned up`：工作线程已结束采集并执行清理；仍应核实下一轮能否重新选屏。
+- `cancelled callback still pending`：取消后等待回调达到清理时限，回调所有权暂被保留以避免访问已销毁对象；不能把这条记录当成所有异步资源均已释放的证据。
+
+客户端自身 `ext_portal` 成功时可能没有钩子的门户日志。实际成功应结合客户端首帧、编码记录和对端画面判断。
+
+## 2026-10-12 新增证据与修复（实际会议验证待完成）
+
+- 原函数包装保存的是函数指针，历史代码却用 `std::function::target<函数类型>()` 取目标，11 个拦截函数都取到空值。安装库的反汇编确认扩展查询直接返回失败；独立系统探针确认本机 XDamage 和 XShm 实际可用。现改为直接调用 `dlsym` 得到的类型化指针，不使用 PLT 旧地址。
+- 18:40 的旧日志同时出现扩展不可用警告和 `init.leave.succ`，随后不断 `device.busy`。因此，历史「扩展查询失败必然让初始化退出」结论并不普遍成立，需按具体版本和调用阶段判断。
+- 会话改由一个工作线程管理；取消、外部关闭、初始化失败和首帧超时均进入清理。停止信号包括相关 XShm 段分离、XDamage 对象销毁和采集 Display 关闭，以覆盖普通 XGetImage 路径。截图读取持有会话所有权并与帧写入互斥。
+- 本机 Xwayland 根窗口的直接 XGetImage 探针收到 BadMatch。屏幕截图路径改为等待真实 PipeWire 首帧，再填入普通 XImage/共享内存图像；小图像和其他原函数仍正常转调。不再在门户线程里向全进程环境恢复 WAYLAND_DISPLAY。
+- 日志带时间、进程号和 `revision=capture-v2`。可选回归检查见 README；它们不能证明实际会议已恢复，也不能解决客户端根本没有发起采集的情况。
+- 已在实际运行目录编译安装，安装库与该目录的构建产物 SHA-256 一致。三个回归检查覆盖模拟门户取消/重试、私有 8×8 pixmap 的原函数转调，以及首帧前像素保护和颜色转换。用户尚未反馈实际会议验证结果；此次检查未覆盖真实门户成功送帧、共享停止信号及客户端编码的完整链路。
+- 修改前的源码和库保存在 `/home/phrolova/Applications/TencentMeeting/backups/20261012-203242-before-capture-v2`。不要把旧备份与当前运行版本的日志混为一轮实验。
 
 ## 许可
 

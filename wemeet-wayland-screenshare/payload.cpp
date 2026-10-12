@@ -87,9 +87,11 @@ std::vector<std::tuple<int, int>> get_screen_sizes(
 ){
   std::vector<std::tuple<int, int>> screen_sizes;
   XRRScreenResources *screen_resources = XRRGetScreenResources(display, RootWindow(display, screen));
+  if (!screen_resources) return screen_sizes;
   for (int i = 0; i < screen_resources->noutput; i++) {
     RROutput output = screen_resources->outputs[i];
     XRROutputInfo *output_info = XRRGetOutputInfo(display, screen_resources, output);
+    if (!output_info) continue;
     if (output_info->connection == RR_Connected) {
       XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(display, screen_resources, output_info->crtc);
       if (crtc_info) {
@@ -128,7 +130,7 @@ std::vector<std::tuple<int, int>> get_screen_sizes(
     However we keep the DE detection logic here in case we need to use different strategies for different DEs...
 */
 
-void x11_sanitizer_main()
+void x11_sanitizer_main(Interface* interface_handle)
 {
   // get the current session type
   // if it's "wayland", then the x11 sanitizer can just exit
@@ -137,9 +139,8 @@ void x11_sanitizer_main()
     return;
   }
   
-  auto& interface_singleton = InterfaceSingleton::getSingleton();
-  auto* interface_handle = interface_singleton.interface_handle.load();
   Display* display = XOpenDisplay(NULL);
+  if (!display) return;
   int screen = DefaultScreen(display);
   XWindow_t root_window = DefaultRootWindow(display);
 
@@ -157,6 +158,7 @@ void x11_sanitizer_main()
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     auto targets = x11_sanitizer_get_targets(display, root_window);
+    if (targets.empty()) continue;
     auto now = std::chrono::high_resolution_clock::now();
     if (targets.size() != 0 && target_first_occurred == false) {
       target_first_occurred = true;
@@ -230,116 +232,111 @@ void x11_sanitizer_main()
 
 
 
-std::thread payload_start_portal_gio_mainloop_thread(){
-  auto& interface_singleton = InterfaceSingleton::getSingleton();
-  auto* portal_handle = interface_singleton.portal_handle.load();
-  std::thread portal_gio_mainloop_thread = std::thread(
-    [portal_handle](){
-      GMainContext* ctx = g_main_context_new();
-      g_main_context_push_thread_default(ctx);
-      portal_handle->arm();
-      portal_handle->gio_mainloop = g_main_loop_new(ctx, FALSE);
-      g_main_loop_run(portal_handle->gio_mainloop);
-      g_main_context_pop_thread_default(ctx);
-      g_main_context_unref(ctx);
-    }
-  );
-  for (int i = 0; i < 500 && !portal_handle->session.load() &&
-       portal_handle->status.load() == XdpScreencastPortalStatus::kInit; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  if (!portal_handle->session.load() &&
-      portal_handle->status.load() == XdpScreencastPortalStatus::kInit) {
-    FILE* f = fopen("/tmp/wemeet-hook.log", "a");
-    if (f) {
-      fprintf(f, "[portal] timed out waiting for screencast session\n");
-      fclose(f);
-    }
-    portal_handle->status.store(XdpScreencastPortalStatus::kCancelled, std::memory_order_release);
-  }
-  return std::move(portal_gio_mainloop_thread);
+CaptureSession::CaptureSession() = default;
+
+CaptureSession::~CaptureSession() {
+  stop();
+  if (worker_.joinable()) worker_.join();
 }
 
-constexpr float PW_MAX_CALLRATE = 60.0;
-constexpr int PW_MIN_CALLTIME_MS = 1000 / PW_MAX_CALLRATE;
+void CaptureSession::start() {
+  worker_ = std::thread(&CaptureSession::run, this);
+}
 
-std::thread payload_start_pipewire_thread(){
-  auto& interface_singleton = InterfaceSingleton::getSingleton();
-  auto* pipewire_handle = interface_singleton.pipewire_handle.load();
-  // this thread is going to be trapped in the pipewire mainloop
-  std::thread pipewire_thread = std::thread(
-    [](){
-      auto& interface_singleton = InterfaceSingleton::getSingleton();
-      while (interface_singleton.interface_handle.load()->pw_stop_flag.load() == false) {
-        auto* pipewire_handle = interface_singleton.pipewire_handle.load();
-        pw_loop_iterate(pw_main_loop_get_loop(pipewire_handle->pw_mainloop), 0);
-        std::this_thread::sleep_for(std::chrono::milliseconds(PW_MIN_CALLTIME_MS));
+void CaptureSession::stop() {
+  stop_requested_.store(true);
+  interface.x11_sanitizer_stop_flag.store(true);
+  state_changed_.notify_all();
+}
+
+void CaptureSession::publish(CaptureStatus state) {
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    status_.store(state);
+  }
+  state_changed_.notify_all();
+}
+
+bool CaptureSession::wait_until_started() {
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  if (!state_changed_.wait_for(lock, std::chrono::seconds(125), [this] {
+        return status_.load() != CaptureStatus::Starting || stop_requested_.load();
+      })) {
+    hook_log("[portal] capture caller timed out");
+    lock.unlock();
+    stop();
+    return false;
+  }
+  return !stop_requested_.load() && status_.load() == CaptureStatus::Running;
+}
+
+void CaptureSession::run() {
+  // One worker owns all portal and PipeWire operations. Cancellation never
+  // waits for another worker to publish an object or acknowledge a stop.
+  GMainContext* context = g_main_context_new();
+  g_main_context_push_thread_default(context);
+  auto portal = std::make_shared<XdpScreencastPortal>();
+  std::unique_ptr<PipewireScreenCast> pipewire;
+  std::thread sanitizer;
+  auto started = std::chrono::steady_clock::now();
+  auto connected = started;
+  try {
+    portal->arm();
+    while (!stop_requested_.load()) {
+      for (int i = 0; i < 32 && g_main_context_pending(context); ++i)
+        g_main_context_iteration(context, FALSE);
+      const auto now = std::chrono::steady_clock::now();
+      const auto portal_status = portal->status.load();
+      if (portal_status == XdpScreencastPortalStatus::kCancelled) {
+        publish(CaptureStatus::Cancelled);
+        break;
       }
-      fprintf(stderr, "%s", green_text("[payload] pw stop signal received. pw stopped. \n").c_str());
+      if (!pipewire && portal_status == XdpScreencastPortalStatus::kRunning) {
+        const int fd = portal->pipewire_fd.exchange(-1);
+        pipewire = std::make_unique<PipewireScreenCast>(fd, portal->pipewire_node_ids.at(0), &interface);
+        if (!pipewire->valid()) throw std::runtime_error("PipeWire context/registry unavailable");
+        connected = now;
+        sanitizer = std::thread(x11_sanitizer_main, &interface);
+      }
+      if (pipewire) {
+        int result = pw_loop_iterate(pw_main_loop_get_loop(pipewire->pw_mainloop), 0);
+        if (result < 0 || pipewire->failed.load()) throw std::runtime_error("PipeWire stream failed");
+        if (interface.frames_ready.load() && status_.load() == CaptureStatus::Starting)
+          publish(CaptureStatus::Running);
+        if (!interface.frames_ready.load() && now - connected > std::chrono::seconds(15))
+          throw std::runtime_error("timed out waiting for first PipeWire frame");
+      } else if ((!portal->session.load() && now - started > std::chrono::seconds(10)) ||
+                 now - started > std::chrono::seconds(120)) {
+        throw std::runtime_error("timed out creating session or waiting for picker");
+      }
+      std::unique_lock<std::mutex> lock(state_mutex_);
+      state_changed_.wait_for(lock, std::chrono::milliseconds(16), [this] { return stop_requested_.load(); });
     }
-  );
-  fprintf(stderr, "%s", green_text("[payload] pipewire thread started.\n").c_str());
-  return std::move(pipewire_thread);
-}
-
-
-// this payload_main will be executed by the payload_thread, which is created in XShmAttachHook
-// and this thread will be detached immediately after creation
-void payload_main(){
-
-
-  auto& interface_singleton = InterfaceSingleton::getSingleton();
-  auto* portal_handle = interface_singleton.portal_handle.load();
-
-  // start the gio mainloop thread. Session start (the GNOME picker) is
-  // issued from the create callback on that thread's main context.
-  std::thread portal_gio_mainloop_thread = payload_start_portal_gio_mainloop_thread();
-
-  // start x11 sanitizer thread
-  std::thread x11_sanitizer_thread = std::thread(x11_sanitizer_main);
-
-  while(portal_handle->status.load() == XdpScreencastPortalStatus::kInit ) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  };
-
-  // screencast cancelled. we stop the gio mainloop and join the gio mainloop thread
-  if (portal_handle->status.load() == XdpScreencastPortalStatus::kCancelled) {
-    fprintf(stderr, "%s", red_text("[payload] screencast cancelled. stop gio and join gio thread. \n").c_str());
-    g_main_loop_quit(portal_handle->gio_mainloop);
-    x11_sanitizer_thread.join();
-    portal_gio_mainloop_thread.join();
-    return;
+  } catch (const std::exception& error) {
+    hook_log("[portal] capture failed: %s", error.what());
+    publish(CaptureStatus::Cancelled);
   }
 
-  while(portal_handle->pipewire_fd.load() == -1){
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  interface.frames_ready.store(false);
+  interface.x11_sanitizer_stop_flag.store(true);
+  if (sanitizer.joinable()) sanitizer.join();
+  pipewire.reset();
+  portal->cancel();
+  // Drain cancelled async completions before dropping the private context.
+  // Callback owners keep the portal alive even if a broken service never
+  // replies; it cannot access the destroyed capture frame/session.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (portal->pending_requests.load() && std::chrono::steady_clock::now() < deadline) {
+    for (int i = 0; i < 32 && g_main_context_pending(context); ++i)
+      g_main_context_iteration(context, FALSE);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  fprintf(stderr, "%s", green_text("[payload SYNC] pipewire_fd acquired: " + std::to_string(portal_handle->pipewire_fd.load()) + "\n").c_str());
-
-  
-  while(interface_singleton.pipewire_handle.load() == nullptr){
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  fprintf(stderr, "%s", green_text("[payload SYNC] got pipewire_handle.\n").c_str());
-
-  // start the pipewire thread
-  std::thread pipewire_thread = payload_start_pipewire_thread();
-
-  // we can join the sanitizer thread here since the pipewire thread is up
-  // which means the user has successfully started the screenshare
-  interface_singleton.interface_handle.load()->x11_sanitizer_stop_flag.store(true, std::memory_order_seq_cst);
-  x11_sanitizer_thread.join();
-  fprintf(stderr, "%s", green_text("[payload SYNC] x11 sanitizer stopped.\n").c_str());
-
-  pipewire_thread.join();
-  interface_singleton.interface_handle.load()->payload_pw_stop_confirm.store(true, std::memory_order_seq_cst);
-  fprintf(stderr, "%s", green_text("[payload SYNC] pw stop confirmed.\n").c_str());
-
-  portal_gio_mainloop_thread.join();
-  interface_singleton.interface_handle.load()->payload_gio_stop_confirm.store(true, std::memory_order_seq_cst);
-  fprintf(stderr, "%s", green_text("[payload SYNC] gio stop confirmed.\n").c_str());
-
-  
-  return;
-
+  if (portal->pending_requests.load()) hook_log("[portal] cancelled callback still pending");
+  portal.reset();
+  g_main_context_pop_thread_default(context);
+  g_main_context_unref(context);
+  if (status_.load() != CaptureStatus::Cancelled) publish(CaptureStatus::Stopped);
+  finished_.store(true);
+  state_changed_.notify_all();
+  hook_log("[portal] session cleaned up status=%s", status_.load() == CaptureStatus::Cancelled ? "cancelled" : "stopped");
 }
