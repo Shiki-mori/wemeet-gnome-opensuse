@@ -2,6 +2,14 @@
 
 本仓库是 openSUSE Tumbleweed、GNOME Wayland 上的个人启动器和屏幕共享钩子。不要把腾讯会议安装包、官方客户端或任何腾讯专有二进制加进来。
 
+## 本机实际运行目录
+
+- 实际在用的是 `/home/phrolova/Applications/TencentMeeting`（`~/Applications/TencentMeeting`），不是 Git 仓库。
+- 应用菜单执行 `/home/phrolova/Applications/TencentMeeting/wemeetapp`。这个脚本把同目录的 `libhook.so` 放进 `LD_PRELOAD`，再启动 `/usr/libexec/wemeet/bin/wemeetapp`。
+- `~/.local/bin/wemeetapp` 也转调上述启动脚本。
+- 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
+- `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
+
 ## 必须保持的链路
 
 从应用菜单启动 `wemeetapp`。进程始终走 X11 开会，屏幕共享只走这条路：
@@ -45,10 +53,10 @@
 ## 改完钩子之后
 
 ```bash
-cd wemeet-wayland-screenshare
+cd /home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
-install -m 0755 build/libhook.so /path/next/to/wemeetapp/libhook.so
+install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libhook.so
 ```
 
 正在运行的腾讯会议不会加载新的 `libhook.so`。先彻底退出（包括托盘），再从应用菜单打开。
