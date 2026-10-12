@@ -47,7 +47,6 @@ Pixmap XShmCreatePixmap(Display* dpy, Drawable d, char* data, XShmSegmentInfo* s
 Damage XDamageCreate(Display* dpy, Drawable drawable, int level);
 void XCompositeRedirectWindow(Display* dpy, Window window, int update);
 void* dlopen(const char* file, int flags);
-char* getenv(const char* name);
 }
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
@@ -203,44 +202,6 @@ extern "C" void* dlopen(const char* file, int flags) {
     patch_plts_in_handle(handle, file);
   }
   return handle;
-}
-
-// The interview on 2026-10-08 used wemeet's own ext_portal. That path is
-// skipped while this module can see WEMEET_XWAYLAND=1. Hide it only here.
-// The rest of the process must still see 1, or 快速会议 SIGSEGVs.
-extern "C" char* getenv(const char* name) {
-  using Fn = char*(const char*);
-  static Fn* real = nullptr;
-  if (!real) {
-    real = reinterpret_cast<Fn*>(dlsym(RTLD_NEXT, "getenv"));
-  }
-  if (!real) {
-    return nullptr;
-  }
-  if (skip_hook_process() || !name) {
-    return real(name);
-  }
-  void* caller = __builtin_return_address(0);
-  Dl_info info{};
-  const bool from_share = dladdr(caller, &info) != 0 && info.dli_fname &&
-      (std::strstr(info.dli_fname, "libscreen_share_module.so") != nullptr ||
-       std::strstr(info.dli_fname, "libwayland") != nullptr);
-  if (!from_share) {
-    return real(name);
-  }
-  if (std::strcmp(name, "WEMEET_XWAYLAND") == 0) {
-    static std::atomic<int> logged{0};
-    if (logged.exchange(1) == 0) {
-      hook_log("[getenv] hide WEMEET_XWAYLAND from screen share");
-    }
-    return nullptr;
-  }
-  if (std::strcmp(name, "WAYLAND_DISPLAY") == 0) {
-    if (const char* saved = real("WEMEET_HOOK_WAYLAND_DISPLAY")) {
-      return const_cast<char*>(saved);
-    }
-  }
-  return real(name);
 }
 
 // Snapshot Wayland display for the portal, then hide it from wemeet so
@@ -511,23 +472,37 @@ void XShmDetachHook(){
 extern "C" {
 
 Bool XShmAttach(Display* dpy, XShmSegmentInfo* shminfo){
+  ensure_portal();
   auto* real = XShmAttachFunc.func.target<XShmAttachType>();
   return real ? real(dpy, shminfo) : False;
 }
 
 Bool XShmGetImage(Display* dpy, Drawable d, XImage* image, int x, int y, unsigned long plane_mask){
   auto* real = XShmGetImageFunc.func.target<XShmGetImageType>();
-  return real ? real(dpy, d, image, x, y, plane_mask) : False;
+  Bool ok = real ? real(dpy, d, image, x, y, plane_mask) : False;
+  if (image && looks_like_screen_grab(image->width, image->height)) {
+    ensure_portal();
+    XShmGetImageHook(*image);
+  }
+  return ok;
 }
 
 Bool XShmDetach(Display* dpy, XShmSegmentInfo* shminfo){
+  XShmDetachHook();
   auto* real = XShmDetachFunc.func.target<XShmDetachType>();
   return real ? real(dpy, shminfo) : False;
 }
 
 XImage* XGetImage(Display* dpy, Drawable d, int x, int y, unsigned int width, unsigned int height, unsigned long plane_mask, int format){
+  if (looks_like_screen_grab(width, height)) {
+    ensure_portal();
+  }
   auto* real = XGetImageFunc.func.target<XGetImageType>();
-  return real ? real(dpy, d, x, y, width, height, plane_mask, format) : nullptr;
+  XImage* image = real ? real(dpy, d, x, y, width, height, plane_mask, format) : nullptr;
+  if (image && looks_like_screen_grab(width, height)) {
+    XShmGetImageHook(*image);
+  }
+  return image;
 }
 
 Bool XDamageQueryExtension(Display *dpy, int *event_base_return, int *error_base_return) {
@@ -536,6 +511,9 @@ Bool XDamageQueryExtension(Display *dpy, int *event_base_return, int *error_base
 }
 
 int XCopyArea(Display* dpy, Drawable src, Drawable dest, GC gc, int src_x, int src_y, unsigned int width, unsigned int height, int dest_x, int dest_y) {
+  if (looks_like_screen_grab(width, height)) {
+    ensure_portal();
+  }
   auto* real = XCopyAreaFunc.func.target<XCopyAreaType>();
   return real ? real(dpy, src, dest, gc, src_x, src_y, width, height, dest_x, dest_y) : 0;
 }
@@ -546,11 +524,17 @@ Bool XShmQueryVersion(Display* dpy, int* major, int* minor, Bool* pixmaps) {
 }
 
 XImage* XShmCreateImage(Display* dpy, Visual* visual, unsigned int depth, int format, char* data, XShmSegmentInfo* shminfo, unsigned int width, unsigned int height) {
+  if (looks_like_screen_grab(width, height)) {
+    ensure_portal();
+  }
   auto* real = XShmCreateImageFunc.func.target<XShmCreateImageType>();
   return real ? real(dpy, visual, depth, format, data, shminfo, width, height) : nullptr;
 }
 
 Pixmap XShmCreatePixmap(Display* dpy, Drawable d, char* data, XShmSegmentInfo* shminfo, unsigned int width, unsigned int height, unsigned int depth) {
+  if (looks_like_screen_grab(width, height)) {
+    ensure_portal();
+  }
   auto* real = XShmCreatePixmapFunc.func.target<XShmCreatePixmapType>();
   return real ? real(dpy, d, data, shminfo, width, height, depth) : None;
 }
