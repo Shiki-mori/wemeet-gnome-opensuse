@@ -65,4 +65,12 @@ if(WEMEET_BUILD_TESTS)
   target_link_libraries(frame-injection PRIVATE hook)
   add_test(NAME first-frame-and-colors COMMAND frame-injection)
   set_tests_properties(first-frame-and-colors PROPERTIES TIMEOUT 10)
+  add_library(screen-share-fixture SHARED tests/screen-share-fixture.cpp)
+  set_target_properties(screen-share-fixture PROPERTIES OUTPUT_NAME screen_share_module
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+  add_executable(module-routing tests/module-routing.cpp)
+  target_link_libraries(module-routing PRIVATE ${CMAKE_DL_LIBS})
+  add_test(NAME screen-share-module-routing COMMAND ${CMAKE_COMMAND} -E env
+    LD_PRELOAD=$<TARGET_FILE:hook> $<TARGET_FILE:module-routing> $<TARGET_FILE:screen-share-fixture>)
+  set_tests_properties(screen-share-module-routing PROPERTIES TIMEOUT 10)
 endif()

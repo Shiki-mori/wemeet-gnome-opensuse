@@ -83,6 +83,21 @@ static void* real_dlopen_fn(const char* file, int flags) {
   return real(file, flags);
 }
 
+// In this client's screen-share UI, "1" enables its native portal branch.
+// Keep the meeting/platform environment at "1", but route this one module
+// to X11 capture so each shared session is owned by our portal worker.
+static char* screen_share_getenv(const char* name) {
+  if (name && std::strcmp(name, "WEMEET_XWAYLAND") == 0) {
+    static char value[] = "0";
+    static std::atomic<unsigned> queries{0};
+    const unsigned query = queries.fetch_add(1) + 1;
+    if (query <= 12)
+      hook_log("[route] screen-share WEMEET_XWAYLAND=0 query=%u (meeting/platform remains 1)", query);
+    return value;
+  }
+  return getenv(name);
+}
+
 static void patch_plts_in_handle(void* handle, const char* tag) {
   std::lock_guard<std::recursive_mutex> lock(g_patch_mu);
   if (!handle) {
@@ -118,9 +133,15 @@ static void patch_plts_in_handle(void* handle, const char* tag) {
       hook_log("[plt] %s replace %s r=%d old=%p", tag, it.name, r, oldfn);
     }
   }
+  if (std::strstr(tag, "libscreen_share_module.so")) {
+    void* oldfn = nullptr;
+    int result = plthook_replace(plt, "getenv", reinterpret_cast<void*>(screen_share_getenv), &oldfn);
+    hook_log("[route] screen-share getenv PLT replace result=%d old=%p", result, oldfn);
+    if (result == PLTHOOK_SUCCESS) ++ok;
+  }
   plthook_close(plt);
   if (ok > 0) {
-    g_xcast_patched.store(true);
+    if (std::strstr(tag, "libxcast.so")) g_xcast_patched.store(true);
     hook_log("[plt] %s patched %d symbols", tag, ok);
   }
 }
@@ -166,9 +187,8 @@ extern "C" void* dlopen(const char* file, int flags) {
   return handle;
 }
 
-// After startup, every library in this process must keep seeing the X11
-// meeting path. The screen-share module switches to a blank external
-// capture when it observes a Wayland session.
+// Preserve the meeting environment. The screen-share module has a separate
+// PLT-scoped getter above; its portal-selection flag has different semantics.
 static std::atomic<bool> g_lock_client_env{false};
 
 extern "C" char* getenv(const char* name) {
@@ -218,7 +238,7 @@ static void wemeet_hook_ctor() {
   setenv("WEMEET_XWAYLAND", "1", 1);
   setenv("XDG_SESSION_TYPE", "x11", 1);
   g_lock_client_env.store(true, std::memory_order_release);
-  hook_log("[chain] x11-capture + gnome-portal revision=capture-v2 pid=%d wayland_saved=%s",
+  hook_log("[chain] x11-capture + gnome-portal revision=capture-v3 pid=%d wayland_saved=%s",
            getpid(),
            std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)");
   try_patch_xcast();
