@@ -4,6 +4,8 @@
 
 本仓库**不包含**腾讯会议安装包、官方客户端，或任何腾讯的专有二进制文件。客户端需要从腾讯会议官网或发行版软件源自行安装。
 
+**本机已验证可正常运行的版本：`capture-v4-working`。** 2026-10-12 用户实际会议测试确认：GNOME 选屏正常、共享画面持续更新，停止后再次共享也能重新选屏并正常更新。该 Git 标签对应 capture-v4 源码，可作为本机后续修改的对照基线。
+
 ## 包含什么
 
 | 路径 | 内容 |
@@ -23,7 +25,7 @@
 
 ## 编译钩子
 
-依赖：`cmake`、`gcc-c++`、`libportal-devel`、`pipewire-devel`、`libX11-devel`、`libXrandr-devel`。不需要 OpenCV。
+依赖：`cmake`、`gcc-c++`、`libportal-devel`、`pipewire-devel`、`libX11-devel`、`libXext-devel`、`libXrandr-devel`、`libXdamage-devel`、`libXfixes-devel`。不需要 OpenCV。
 
 ```bash
 cd wemeet-wayland-screenshare
@@ -46,8 +48,8 @@ cmake --build wemeet-wayland-screenshare/build -j"$(nproc)"
 ctest --test-dir wemeet-wayland-screenshare/build --output-on-failure
 ```
 
-门户检查在独立 D-Bus 上模拟创建失败、选屏取消和请求未完成时停止；不会打开真实选屏或会议。X11 检查读取自建的 8×8 pixmap，验证加载钩子后的原函数转调，需要可访问的 X11 显示；无显示时跳过。像素检查验证首帧前不改写图像以及颜色转换。模块路由检查使用自建共享库，验证屏幕共享模块读取的路由变量与开会环境分别保持预期值。上述检查不代替实际会议中的共享验证。
+门户检查在独立 D-Bus 上模拟创建失败、选屏取消和请求未完成时停止；不会打开真实选屏或会议。X11 检查读取自建的 8×8 pixmap，验证加载钩子后的原函数转调，需要可访问的 X11 显示；无显示时跳过。像素检查验证首帧前不改写图像、颜色转换以及后续帧替换。模块路由检查使用自建共享库，验证屏幕共享模块读取的路由变量与开会环境分别保持预期值。如果安装了 `Xvfb`，还会在独立 X 服务器中检查每个新帧的全屏 XDamage 通知、重复序号过滤，以及通知前后桌面像素不变。上述检查不代替实际会议中的共享验证。
 
-新钩子的启动日志带有 `revision=capture-v3`。屏幕共享模块的路由查询应出现 `[route] screen-share WEMEET_XWAYLAND=0`，随后钩子创建门户并记录 `[portal] first pipewire frame`；停止或取消后应出现 `[portal] session cleaned up`。日志路径为 `/tmp/wemeet-hook.log`，每条新日志带时间和进程号。
+新钩子的启动日志带有 `revision=capture-v4`。屏幕共享模块的路由查询应出现 `[route] screen-share WEMEET_XWAYLAND=0`，随后钩子创建门户并记录 `[portal] first pipewire frame`、`[damage] PipeWire frame notifications enabled`；每五秒的 `[frames]` 记录已复制帧数、客户端读图次数、最后读到的帧序号和通知数。停止或取消后应出现 `[portal] session cleaned up`。日志路径为 `/tmp/wemeet-hook.log`，每条新日志带时间和进程号。
 
-此前 capture-v2 的首次实际共享走的是客户端自身 `ext_portal`，停止后重试未能启动采集。capture-v3 在屏幕共享模块的 PLT 上单独调整其门户选择变量，使共享进入 X11 截图钩子；开会部分保留原启动设置。该调整的实际会议效果尚待验证。
+此前 capture-v2 的首次实际共享走的是客户端自身 `ext_portal`，停止后重试未能启动采集。capture-v3 在屏幕共享模块的 PLT 上调整其门户选择变量，使共享进入 X11 截图钩子；实际日志已观察到多轮门户启动与清理，但用户反馈对端画面冻结。capture-v4 为已复制的 PipeWire 新帧补充 XDamage 全屏变化通知，让客户端重新取图；开会部分保留原启动设置。用户已验证连续画面与停止后再次共享正常，五项回归检查也全部通过。

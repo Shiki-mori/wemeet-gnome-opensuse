@@ -238,7 +238,7 @@ static void wemeet_hook_ctor() {
   setenv("WEMEET_XWAYLAND", "1", 1);
   setenv("XDG_SESSION_TYPE", "x11", 1);
   g_lock_client_env.store(true, std::memory_order_release);
-  hook_log("[chain] x11-capture + gnome-portal revision=capture-v3 pid=%d wayland_saved=%s",
+  hook_log("[chain] x11-capture + gnome-portal revision=capture-v4 pid=%d wayland_saved=%s",
            getpid(),
            std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)");
   try_patch_xcast();
@@ -301,7 +301,7 @@ static std::shared_ptr<CaptureSession> ensure_portal(Display* display, Drawable 
     if (g_capture && g_capture_display != display) return {};
     if (!g_capture) {
       hook_log("[portal] starting xdg-desktop-portal screencast");
-      g_capture = std::make_shared<CaptureSession>();
+      g_capture = std::make_shared<CaptureSession>(DisplayString(display), DefaultRootWindow(display));
       g_capture_display = display;
       g_capture->start();
     }
@@ -413,6 +413,8 @@ bool XShmGetImageHook(XImage& image, const std::shared_ptr<CaptureSession>& capt
       }
     }
   }
+  interface.last_injected_frame.store(interface.accepted_frames.load());
+  interface.injected_frames.fetch_add(1);
   return true;
 }
 

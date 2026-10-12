@@ -10,6 +10,7 @@
 
 #include "payload.hpp"
 #include "interface.hpp"
+#include "x11-damage.hpp"
 
 #include "helpers.hpp"
 
@@ -232,7 +233,8 @@ void x11_sanitizer_main(Interface* interface_handle)
 
 
 
-CaptureSession::CaptureSession() = default;
+CaptureSession::CaptureSession(std::string display_name, unsigned long root)
+    : x11_display_name_(std::move(display_name)), x11_root_(root) {}
 
 CaptureSession::~CaptureSession() {
   stop();
@@ -277,9 +279,11 @@ void CaptureSession::run() {
   g_main_context_push_thread_default(context);
   auto portal = std::make_shared<XdpScreencastPortal>();
   std::unique_ptr<PipewireScreenCast> pipewire;
+  std::unique_ptr<RootDamageNotifier> damage_notifier;
   std::thread sanitizer;
   auto started = std::chrono::steady_clock::now();
   auto connected = started;
+  auto last_report = started;
   try {
     portal->arm();
     while (!stop_requested_.load()) {
@@ -303,6 +307,19 @@ void CaptureSession::run() {
         if (result < 0 || pipewire->failed.load()) throw std::runtime_error("PipeWire stream failed");
         if (interface.frames_ready.load() && status_.load() == CaptureStatus::Starting)
           publish(CaptureStatus::Running);
+        if (interface.frames_ready.load()) {
+          if (!damage_notifier)
+            damage_notifier = std::make_unique<RootDamageNotifier>(x11_display_name_, x11_root_);
+          damage_notifier->notify(interface.accepted_frames.load());
+          if (now - last_report >= std::chrono::seconds(5)) {
+            hook_log("[frames] accepted=%llu image_reads=%llu last_read=%llu damage_notifications=%llu",
+              static_cast<unsigned long long>(interface.accepted_frames.load()),
+              static_cast<unsigned long long>(interface.injected_frames.load()),
+              static_cast<unsigned long long>(interface.last_injected_frame.load()),
+              static_cast<unsigned long long>(damage_notifier->notifications()));
+            last_report = now;
+          }
+        }
         if (!interface.frames_ready.load() && now - connected > std::chrono::seconds(15))
           throw std::runtime_error("timed out waiting for first PipeWire frame");
       } else if ((!portal->session.load() && now - started > std::chrono::seconds(10)) ||
@@ -320,6 +337,7 @@ void CaptureSession::run() {
   interface.frames_ready.store(false);
   interface.x11_sanitizer_stop_flag.store(true);
   if (sanitizer.joinable()) sanitizer.join();
+  damage_notifier.reset();
   pipewire.reset();
   portal->cancel();
   // Drain cancelled async completions before dropping the private context.

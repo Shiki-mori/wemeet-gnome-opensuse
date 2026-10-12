@@ -20,16 +20,19 @@
 - 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
 - `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
 
-## 当前启动设置与钩子设计（capture-v3，会议验证待完成）
+## 当前启动设置与钩子设计（capture-v4，本机已验证可正常运行）
+
+2026-10-12 用户实测确认：GNOME 选屏正常、选屏后画面持续更新、停止后再次共享能够重新选屏并正常更新。将此版本标记为本机可正常运行的基线，Git 标签为 `capture-v4-working`。对应运行库 SHA-256 为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`。
 
 从应用菜单启动 `wemeetapp`。启动器目前把客户端环境设置为 X11，钩子的目标链路如下；客户端是否实际进入这条链路，需要按每次运行的日志确认。历史记录中也有客户端自身 `ext_portal` 路径成功送帧的情况。
 
 1. `WEMEET_XWAYLAND=1`，`XDG_SESSION_TYPE=x11`，`QT_QPA_PLATFORM=xcb`。
-   这个版本的屏幕共享模块用 `WEMEET_XWAYLAND == "1"` 选择客户端自身门户。capture-v3 单独替换 `libscreen_share_module.so` 的 `getenv` PLT，使该模块读取此变量为 `"0"`；开会和平台部分仍读取 `"1"`。这是模块局部路由实验，完整效果待用户验证。
+   这个版本的屏幕共享模块用 `WEMEET_XWAYLAND == "1"` 选择客户端自身门户。capture-v3 起单独替换 `libscreen_share_module.so` 的 `getenv` PLT，使该模块读取此变量为 `"0"`；开会和平台部分仍读取 `"1"`。实际日志已观察到多轮钩子门户启动、首帧和停止清理，但 capture-v3 对端画面冻结。
 2. 钩子在构造函数里保存并清除 `WAYLAND_DISPLAY`，同时拦截 `getenv` 保持上述环境设置。当前门户代码不再恢复这个全进程变量；其他会话检测方式仍需独立分析。
 3. 客户端调用被拦截的 X11 截图函数时，钩子尝试启动门户。目前图像尺寸判断是宽度至少 640、高度至少 360；XShm 段跟踪也参与触发。
 4. 钩子在自己的 `GMainContext` 中创建门户会话、弹出 GNOME 选屏，等真实 PipeWire 首帧到达后填入 XImage 或共享内存图像。当前屏幕图像分支会直接填充画面，其他原函数正常转调。
-5. 相关 XShm 段分离、XDamage 对象销毁或采集 Display 关闭会请求清理；门户外部关闭和错误也会结束会话。停止共享、再次共享是否实际触发这些信号，尚需会议验证。
+5. capture-v4 用独立 X11 连接对每个已复制的新帧调用 `XDamageAdd`，报告整个 X11 根窗口区域发生变化，使客户端再次取图并更新编码区域。当前只通知根窗口，不向任意外部窗口或 pixmap 发送通知，也不绘制桌面。
+6. 相关 XShm 段分离、XDamage 对象销毁或采集 Display 关闭会请求清理；门户外部关闭和错误也会结束会话。capture-v3 实际日志已有多轮 XDamage 销毁触发清理、再次共享重新选屏的记录；不能据此确认画面刷新正常。
 
 `libhook.so` 必须和 `wemeetapp` 放在同一目录。启动器找不到它就退出。
 
@@ -70,11 +73,14 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 
 正在运行的腾讯会议不会加载新的 `libhook.so`。先彻底退出（包括托盘），再从应用菜单打开。
 
-调试日志在 `/tmp/wemeet-hook.log`，当前日志带时间和进程号，新启动记录包含 `revision=capture-v3`。只有启动或补丁记录，表示尚未观察到钩子的门户启动；需与同次客户端日志交叉检查，不能单凭日志缺失判断根因。
+调试日志在 `/tmp/wemeet-hook.log`，当前日志带时间和进程号，新启动记录包含 `revision=capture-v4`。只有启动或补丁记录，表示尚未观察到钩子的门户启动；需与同次客户端日志交叉检查，不能单凭日志缺失判断根因。
 
 - `[portal] session created`：门户会话已创建，尚不代表已选屏或已采集。
 - `[route] screen-share getenv PLT replace result=0`：模块局部路由替换成功；`[route] screen-share WEMEET_XWAYLAND=0` 表明该模块实际查询了路由变量。
 - `[portal] first pipewire frame`：钩子已复制一个通过格式与缓冲区检查的帧，尚不代表客户端已编码或对端收到。
+- `[portal] stream ... source_type=1` 表示门户报告显示器来源，`2` 表示窗口来源，`0` 表示没有提供该属性。
+- `[damage] PipeWire frame notifications enabled`：独立 X11 连接已启用根窗口变化通知。
+- `[frames] accepted=... image_reads=... last_read=... damage_notifications=...`：分别是已复制帧数、客户端成功读图次数、最后读到的帧序号和已发送通知数，每五秒记录；结合变化量区分收帧、通知、读图是否停滞。不能把 PipeWire 处理回调次数直接等同于已复制帧数。
 - `[portal] session cleaned up`：工作线程已结束采集并执行清理；仍应核实下一轮能否重新选屏。
 - `cancelled callback still pending`：取消后等待回调达到清理时限，回调所有权暂被保留以避免访问已销毁对象；不能把这条记录当成所有异步资源均已释放的证据。
 
@@ -91,12 +97,23 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 - 用户随后反馈：首次共享出现 GNOME 选屏、对端能看见画面；停止后再次共享不选屏且失败。21:09:36 客户端日志记录 `ext_portal` 启动及编码首帧，21:10:26 停止该设备，21:11:03 第二次仅配置 `Display_0`，没有再次启动采集。同次钩子日志只有加载和 PLT 记录，没有门户或 X11 查询记录。首次成功走客户端自身门户，不能据此声称 capture-v2 的截图/清理链路已通过会议验证。
 - 修改前的源码和库保存在 `/home/phrolova/Applications/TencentMeeting/backups/20261012-203242-before-capture-v2`。不要把旧备份与当前运行版本的日志混为一轮实验。
 
-## 2026-10-12 capture-v3 路由调整（完整效果待验证）
+## 2026-10-12 capture-v3 路由调整
 
 - 对当前已安装屏幕共享模块的只读检查显示，名为 `IsUseXDGDesktopPortal` 的日志对应函数读取 `WEMEET_XWAYLAND` 并比较 `"1"`；相关调用分支在真值时进入原生 Wayland 选屏助手。此前「全进程保持此变量为 1 就能保证共享走 X11 钩子」的推断不成立。
 - 新代码仅在屏幕共享模块 PLT 上替换该变量的读取，显式返回 `"0"`，使其选择 X11 截图；其他模块仍为 `"1"`，会话类型仍为 x11，WAYLAND_DISPLAY 不恢复。新方案与此前在其他范围隐藏变量的实验不能直接等同。
 - 新增自建共享库回归检查：即使使用 `RTLD_DEEPBIND`，模块局部 PLT 路由也应在多次查询中保持生效，而模块外的开会环境保持原值。该检查不载入或收录腾讯二进制，也不证明实际会议中的停止/重启行为。
-- capture-v3 已同步到实际运行目录、在那里编译并安装，四个回归检查通过；完整会议链路仍待反馈。capture-v2 源码和库的备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-212754-before-capture-v3`。
+- capture-v3 已同步到实际运行目录、在那里编译并安装，四个回归检查通过；随后会议反馈及日志见下一节。capture-v2 源码和库的备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-212754-before-capture-v3`。
+
+## 2026-10-12 capture-v3 冻结反馈与 capture-v4 刷新修复
+
+- 用户明确选择整块显示器，反馈对端画面停在 GNOME 选屏窗口淡出的瞬间，光标仅在 Codex 区域更新。不能将这个现象解释成选择了单个窗口。
+- PID 130753 的 21:32—21:42 日志有多轮钩子门户首帧；21:33、21:36、21:40 记录 XDamage 销毁触发会话清理，随后能再次创建门户。重复共享清理已观察到，画面冻结仍未解决。
+- 同次日志中 PipeWire 处理计数持续增加，但此前计数在缓冲检查前增加，因此只证明处理回调持续执行；客户端屏幕更新率约 0.49 fps，独立 X11 光标线程有时约 20 fps。X11 光标位置不覆盖所有 Wayland 窗口；门户已请求内嵌光标，恢复完整新帧刷新后仍需验证鼠标显示效果。
+- 对当前 libxcast.so 的只读检查显示，首帧后根据 XDamage 事件及其脏区域决定是否取图。钩子此前只替换截图像素，没有向该机制报告 PipeWire 的变化。21:47 的三秒探针用独立 X11 连接对根窗口发送全屏 `XDamageAdd`，自身收到 60 次完整区域通知；客户端同一十秒统计窗口由 0.49 升到 1.59 fps，随后回到 0.49。这支持缺少变化通知的原因判断，但不是对端恢复的证明。
+- capture-v4 在成功复制缓冲后增加帧序号，由门户工作线程为新序号发送全屏 XDamage 通知；重复序号和首帧前不发送。连接和区域随会话清理。保留扩展查询和创建的真实返回值，不通过禁用 XDamage 改变路径。
+- 增加接受帧/图像读取/通知计数及门户 source_type 日志。新增独立 Xvfb 检查完整脏区域、重复序号过滤和桌面像素不变；像素检查覆盖后续帧替换。用户随后确认实际会议可选屏、画面持续更新，停止后再次共享也能重新选屏并正常更新；跨窗口光标没有单独反馈，不扩大验证结论。
+- capture-v4 已在实际运行目录编译、通过五项回归检查并原子安装。安装库与构建产物 SHA-256 均为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`；capture-v3 源码与库备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-215400-before-capture-v4`。运行中的旧进程需要完全退出后重新启动。
+- 2026-10-12 按用户验证结果将 capture-v4 标记为可正常运行版本，Git 标签 `capture-v4-working`。后续排查可用该版本作为本机对照基线；历史失败观察和未覆盖场景仍保留，不能据此保证其他机器或未来客户端版本的行为。
 
 ## 许可
 

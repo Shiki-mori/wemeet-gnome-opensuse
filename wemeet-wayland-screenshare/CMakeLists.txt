@@ -15,7 +15,7 @@ pkg_check_modules(LIBPORTAL REQUIRED libportal)
 pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
 
 
-find_package(X11 REQUIRED)
+find_package(X11 REQUIRED COMPONENTS Xdamage Xfixes)
 
 function(add_compile_options_for TARGET_NAME)
   target_link_libraries(${TARGET_NAME} PRIVATE ${GIO_LIBRARIES})
@@ -32,6 +32,7 @@ function(add_compile_options_for TARGET_NAME)
 
   target_link_libraries(${TARGET_NAME} PRIVATE X11::X11)
   target_link_libraries(${TARGET_NAME} PRIVATE X11::Xrandr)
+  target_link_libraries(${TARGET_NAME} PRIVATE X11::Xdamage X11::Xfixes)
 endfunction()
 
 # wayland screencast hook
@@ -73,4 +74,13 @@ if(WEMEET_BUILD_TESTS)
   add_test(NAME screen-share-module-routing COMMAND ${CMAKE_COMMAND} -E env
     LD_PRELOAD=$<TARGET_FILE:hook> $<TARGET_FILE:module-routing> $<TARGET_FILE:screen-share-fixture>)
   set_tests_properties(screen-share-module-routing PROPERTIES TIMEOUT 10)
+  find_program(XVFB Xvfb)
+  if(XVFB)
+    add_executable(frame-damage tests/frame-damage.cpp)
+    target_include_directories(frame-damage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(frame-damage PRIVATE X11::X11 X11::Xdamage X11::Xfixes)
+    add_test(NAME pipewire-frame-damage COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/with-xvfb.py ${XVFB} $<TARGET_FILE:frame-damage>)
+    set_tests_properties(pipewire-frame-damage PROPERTIES TIMEOUT 15)
+  endif()
 endif()

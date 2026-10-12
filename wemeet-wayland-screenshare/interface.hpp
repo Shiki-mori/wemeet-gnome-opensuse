@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <string>
 
 #include "framebuf.hpp"
 
@@ -13,6 +14,9 @@ struct Interface {
                        1080, 1920, SpaVideoFormat_e::RGBA};
   std::mutex frame_mutex;
   std::atomic<bool> frames_ready{false};
+  std::atomic<uint64_t> accepted_frames{0};
+  std::atomic<uint64_t> injected_frames{0};
+  std::atomic<uint64_t> last_injected_frame{0};
   std::atomic<bool> x11_sanitizer_stop_flag{false};
 };
 
@@ -22,7 +26,7 @@ enum class CaptureStatus { Starting, Running, Cancelled, Stopped };
 // the portal/PipeWire objects; destruction requests stop and joins it.
 class CaptureSession {
 public:
-  CaptureSession();
+  explicit CaptureSession(std::string x11_display_name = {}, unsigned long x11_root = 0);
   ~CaptureSession();
   CaptureSession(const CaptureSession&) = delete;
   CaptureSession& operator=(const CaptureSession&) = delete;
@@ -43,4 +47,6 @@ private:
   std::mutex state_mutex_;
   std::condition_variable state_changed_;
   std::thread worker_;
+  const std::string x11_display_name_;
+  const unsigned long x11_root_;
 };

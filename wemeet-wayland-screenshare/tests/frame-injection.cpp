@@ -29,13 +29,20 @@ int main() {
   image.data = reinterpret_cast<char*>(destination.data());
   if (XShmGetImageHook(image, capture) || destination != original) return 1;
   capture->interface.frames_ready.store(true);
+  capture->interface.accepted_frames.store(1);
   if (!XShmGetImageHook(image, capture)) return 1;
   const std::array<unsigned char, 24> expected{
     0, 0, 255, 255, 0, 255, 0, 255, 0, 0, 0, 0,
     255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 0};
   if (destination != expected) return 1;
+  // A later frame must replace the image already read by the client.
+  frame.data[0] = 123;
+  capture->interface.accepted_frames.store(2);
+  if (!XShmGetImageHook(image, capture) || destination[2] != 123 ||
+      capture->interface.last_injected_frame.load() != 2 ||
+      capture->interface.injected_frames.load() != 2) return 1;
   frame.width = 0;
   destination = original;
   if (XShmGetImageHook(image, capture) || destination != original) return 1;
-  std::puts("unready/invalid frames leave pixels intact; RGBA-to-BGRA and padded rows pass");
+  std::puts("unready/invalid pixels intact; color conversion, padded rows and subsequent frame replacement pass");
 }

@@ -168,6 +168,9 @@ struct XdpScreencastPortal : std::enable_shared_from_this<XdpScreencastPortal> {
       unsigned node;
       GVariant* properties;
       while (g_variant_iter_next(&iter, "(u@a{sv})", &node, &properties)) {
+        guint32 source_type = 0;
+        g_variant_lookup(properties, "source_type", "u", &source_type);
+        hook_log("[portal] stream node=%u source_type=%u (1=monitor, 2=window)", node, source_type);
         self->pipewire_node_ids.push_back(node);
         g_variant_unref(properties);
       }
@@ -519,6 +522,7 @@ private:
         memcpy(framebuffer.data.get() + row * framebuffer.row_byte_stride,
                source + row * static_cast<size_t>(stride), row_bytes);
       }
+      interface.accepted_frames.fetch_add(1);
       if (!interface.frames_ready.exchange(true)) {
         hook_log("[portal] first pipewire frame %ux%u", framebuffer.width, framebuffer.height);
       }
