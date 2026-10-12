@@ -8,13 +8,13 @@
 
 用户随后反馈对端画面卡顿严重、鼠标移动出现跟随残影。该版本的已验证范围是上述共享功能，流畅度及光标处理仍有已知问题，需要继续排查。
 
-当前工作副本正在试验 `native-portal-v1`：应用菜单启动后默认让客户端自带的 GNOME 门户/PipeWire 助手共享，保留 X11 开会环境，关闭桥接像素注入和 XDamage 通知。真实效果待测试。彻底退出后，可用以下命令启动桥接模式作对照：
+当前工作副本为 `native-portal-v2`：应用菜单启动后默认让客户端自带的 GNOME 门户/PipeWire 助手共享，保留 X11 开会环境，关闭桥接像素注入和 XDamage 通知。用户已验证 v1 除鼠标不可见外其他功能正常；v2 将原生门户 SelectSources 的光标模式改为 2，让 GNOME 将鼠标嵌入画面，对端效果待测试。彻底退出后，可用以下命令启动桥接模式作对照：
 
 ```bash
 WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp
 ```
 
-原生实验的路由日志在 `/tmp/wemeet-hook.log`（`revision=native-portal-v1`）；客户端每轮门户请求、响应和关闭事件记录在 `/tmp/wemeet-native-portal-进程号.log`。启动器会启动一个独立的只读诊断进程，仅记录对应客户端 PID；需要系统 Python 的 PyGObject，客户端退出后诊断结束。
+原生模式的路由日志在 `/tmp/wemeet-hook.log`（`revision=native-portal-v2`）；共享时应出现 `[cursor] native SelectSources cursor_mode=1 -> 2 (embedded)`。客户端每轮门户请求、响应和关闭事件记录在 `/tmp/wemeet-native-portal-进程号.log`，发出的 SelectSources 应为 cursor_mode=2。启动器会启动一个独立的只读诊断进程，仅记录对应客户端 PID；需要系统 Python 的 PyGObject，客户端退出后诊断结束。
 
 ## 包含什么
 
@@ -35,7 +35,7 @@ WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeet
 
 ## 编译钩子
 
-依赖：`cmake`、`gcc-c++`、`libportal-devel`、`pipewire-devel`、`libX11-devel`、`libXext-devel`、`libXrandr-devel`、`libXdamage-devel`、`libXfixes-devel`。不需要 OpenCV。
+依赖：`cmake`、`gcc-c++`、`libportal-devel`、`pipewire-devel`、`dbus-1-devel`、`libX11-devel`、`libXext-devel`、`libXrandr-devel`、`libXdamage-devel`、`libXfixes-devel`。不需要 OpenCV。
 
 ```bash
 cd wemeet-wayland-screenshare

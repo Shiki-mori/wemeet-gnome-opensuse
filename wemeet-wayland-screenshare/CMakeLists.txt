@@ -13,6 +13,7 @@ pkg_check_modules(GIO REQUIRED gio-2.0)
 pkg_check_modules(LIBPORTAL REQUIRED libportal)
 # pipewire
 pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
+pkg_check_modules(DBUS REQUIRED IMPORTED_TARGET dbus-1)
 
 
 find_package(X11 REQUIRED COMPONENTS Xdamage Xfixes)
@@ -37,11 +38,11 @@ endfunction()
 
 # wayland screencast hook
 
-add_library(hook SHARED hook.cpp payload.cpp plthook_elf.c)
+add_library(hook SHARED hook.cpp payload.cpp native-cursor.cpp plthook_elf.c)
 set_property(TARGET hook PROPERTY POSITION_INDEPENDENT_CODE ON)
 add_compile_options_for(hook)
 find_package(Threads REQUIRED)
-target_link_libraries(hook PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+target_link_libraries(hook PRIVATE ${CMAKE_DL_LIBS} Threads::Threads PkgConfig::DBUS)
 install(TARGETS hook DESTINATION lib/wemeet/)
 
 option(WEMEET_BUILD_TESTS "Build forwarding and isolated portal regression checks" OFF)
@@ -81,6 +82,18 @@ if(WEMEET_BUILD_TESTS)
   add_test(NAME native-portal-diagnostics COMMAND ${DBUS_RUN_SESSION} --
     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/native-monitor.py)
   set_tests_properties(native-portal-diagnostics PROPERTIES TIMEOUT 15)
+  add_library(qt-dbus-fixture SHARED tests/qt-dbus-fixture.cpp)
+  target_link_libraries(qt-dbus-fixture PRIVATE PkgConfig::DBUS)
+  set_target_properties(qt-dbus-fixture PROPERTIES OUTPUT_NAME Qt5DBus
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+  add_executable(native-cursor tests/native-cursor.cpp)
+  target_link_libraries(native-cursor PRIVATE PkgConfig::DBUS ${CMAKE_DL_LIBS})
+  foreach(MODE native-portal x11-bridge)
+    add_test(NAME cursor-scope-${MODE} COMMAND ${DBUS_RUN_SESSION} --
+      ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mock-cursor.py
+      $<TARGET_FILE:hook> $<TARGET_FILE:native-cursor> $<TARGET_FILE:qt-dbus-fixture> ${MODE})
+    set_tests_properties(cursor-scope-${MODE} PROPERTIES TIMEOUT 15)
+  endforeach()
   find_program(XVFB Xvfb)
   if(XVFB)
     add_executable(frame-damage tests/frame-damage.cpp)

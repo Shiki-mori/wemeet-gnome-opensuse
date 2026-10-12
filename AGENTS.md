@@ -20,11 +20,11 @@
 - 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
 - `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
 
-## 当前版本：native-portal-v1 实验；capture-v4 为功能对照基线
+## 当前版本：native-portal-v2 光标修复；native-portal-v1 已验证画面与重复共享
 
-当前启动器默认使用 `WEMEET_CAPTURE_MODE=native-portal`，共享模块读取 `WEMEET_XWAYLAND=1`，使用客户端自带的门户/PipeWire；钩子不替换其 X11 截图 PLT、不启动自己的门户、不注入像素或发送 XDamage 通知。开会环境仍为 xcb/x11/WEMEET_XWAYLAND=1，WAYLAND_DISPLAY 仍隐藏。
+当前启动器默认使用 `WEMEET_CAPTURE_MODE=native-portal`，共享模块读取 `WEMEET_XWAYLAND=1`，使用客户端自带的门户/PipeWire；钩子不替换其 X11 截图 PLT、不启动自己的门户、不注入像素或发送 XDamage 通知。native-portal-v2 在 Qt D-Bus 的发送 PLT 上将原生 SelectSources 请求的 cursor_mode 改为 2，使鼠标嵌入画面；其他请求、门户选项与会话生命周期继续由客户端处理。开会环境仍为 xcb/x11/WEMEET_XWAYLAND=1，WAYLAND_DISPLAY 仍隐藏。
 
-需要对照此前桥接方式时，彻底退出客户端后运行 `WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp`。下面的六步链路描述该桥接模式，而不是原生实验模式。native-portal-v1 尚待真实会议验证，未宣称解决原生路径此前的停止/重试失败。
+需要对照此前桥接方式时，彻底退出客户端后运行 `WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp`。下面的六步链路描述该桥接模式，而不是原生模式。用户已验证 native-portal-v1 除对端不可见鼠标之外其他功能正常；native-portal-v2 的鼠标显示效果待验证。
 
 2026-10-12 用户实测确认：GNOME 选屏正常、选屏后画面持续更新、停止后再次共享能够重新选屏并正常更新。将此版本标记为本机可正常运行的基线，Git 标签为 `capture-v4-working`。对应运行库 SHA-256 为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`。
 
@@ -79,7 +79,7 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 
 正在运行的腾讯会议不会加载新的 `libhook.so`。先彻底退出（包括托盘），再从应用菜单打开。
 
-调试日志在 `/tmp/wemeet-hook.log`，当前实验启动记录包含 `revision=native-portal-v1` 及所选 mode。原生模式只调整共享模块路由，不应出现钩子的 `[portal]` 首帧或 `[damage]` 通知；客户端门户诊断在 `/tmp/wemeet-native-portal-进程号.log`，具体路径也写入钩子启动日志。只有启动或补丁记录时，需与同次客户端和门户诊断交叉检查，不能单凭日志缺失判断根因。
+调试日志在 `/tmp/wemeet-hook.log`，当前启动记录包含 `revision=native-portal-v2` 及所选 mode。原生模式调整共享模块路由及光标请求，不应出现钩子的 `[portal]` 首帧或 `[damage]` 通知；客户端门户诊断在 `/tmp/wemeet-native-portal-进程号.log`，具体路径也写入钩子启动日志。Qt 发送挂钩应记录 `[cursor] Qt D-Bus send hooks result=0/0 ready=1`，共享时应记录 `cursor_mode=1 -> 2`，门户诊断中实际发出的 SelectSources 应为 2。只有启动或补丁记录时，需与同次客户端和门户诊断交叉检查，不能单凭日志缺失判断根因。
 
 - `[portal] session created`：门户会话已创建，尚不代表已选屏或已采集。
 - `[route] screen-share getenv PLT replace result=0`：模块局部路由替换成功；`[route] screen-share WEMEET_XWAYLAND=0` 表明该模块实际查询了路由变量。
@@ -141,6 +141,15 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 - 监视器过滤回调先将消息交给自己的主循环处理，再丢弃旁观的方法调用，避免 GDBus 自动回复 UnknownMethod 导致监视连接被总线关闭。PID 查询使用另一个控制连接，不在 GDBus I/O 线程上同步等待。
 - 新增模拟共享模块的原生路由检查、独立 Xvfb 上的大图像转调检查，以及私有 D-Bus 上两轮创建/选源/启动/关闭诊断检查，覆盖取消、流信息和其他 PID 排除。本机只读探针已确认监视连接能启动。真实原生共享的流畅度、光标以及连续重启结果仍需用户测试。
 - native-portal-v1 已同步到实际运行目录，完成编译并通过全部八项回归检查，随后安装库和启动器。安装库与运行目录构建产物的 SHA-256 均为 `2ec3df34fff1c94f37cbdf2df9b283621ec096fb65f264d86864820104e52bc5`。原 capture-v4 库、启动器及被更新源码备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-223937-before-native-portal-v1`。需彻底退出旧进程，再从菜单启动实验。
+
+## 2026-10-12 native-portal-v2 嵌入光标修复
+
+- 用户反馈原生模式除对端看不到鼠标外其他功能正常。PID 198293 的诊断有两轮完整创建、选源、启动及关闭，两轮 SelectSources 均为 cursor_mode=1（隐藏），对应客户端 ext_portal 两次启动；这解释了没有鼠标的现象。
+- 只读检查发现原生助手内部 cursor_visible 参数开启时会请求 2，但没有确认 Linux 界面中存在可操作的设置入口。不要将内部参数描述成已找到的菜单选项。
+- 在原生模式对已加载 Qt5DBus 库的 dbus_connection_send / send_with_reply PLT 做局部替换。仅处理发往 org.freedesktop.portal.Desktop、路径 /org/freedesktop/portal/desktop、接口 ScreenCast、方法 SelectSources、签名 oa{sv} 且尚未发送的请求；将合法 uint32 光标模式改为 2，缺省隐藏时补入该字段。已为 2 的请求、格式不合法的字段、其他接口或路径及桥接模式正常转调。
+- 用 libdbus 标准 API 复制请求并递归保留其他选项、嵌套值、标志和 Unix FD，发送后将序号及锁定状态传回原消息，保持 Qt 回复关联。读取 Unix FD 时释放 API 返回的副本。原函数从提供者导出符号解析，不使用未绑定 PLT 跳板，不修改腾讯客户端文件或私有对象状态。
+- 新增自建 Qt 形状的动态库及私有 D-Bus 回归检查，覆盖两种发送 API、字段缺省/已设定/类型不合法、非目标路径、模块外直接发送、桥接模式、其他选项、文件描述符及请求回复序号。全部十项检查通过；本机实际 Qt5DBus 库的只读加载探针也确认挂钩 ready=1。真实对端鼠标显示、拖影与重复共享仍需用户验证。
+- native-portal-v2 已在实际运行目录编译、通过十项检查并安装；源码副本与安装库均已核对。库 SHA-256 为 `b5afd664d6042a5435ee64545a8d9d07f7a7a3583e0bf105a5ac6cdd2be1ed35`，native-portal-v1 的库与被修改源码备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-231243-before-native-portal-v2`。安装后的库加载实际 Qt5DBus 探针也确认挂钩成功；需重新启动客户端加载新库。
 
 ## 许可
 

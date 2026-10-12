@@ -35,6 +35,7 @@
 #include "interface.hpp"
 #include "helpers.hpp"
 #include "hook.hpp"
+#include "native-cursor.hpp"
 
 extern "C" {
 #include "plthook.h"
@@ -106,6 +107,10 @@ static void patch_plts_in_handle(void* handle, const char* tag) {
   if (!handle) {
     return;
   }
+  if (g_native_portal.load() && std::strstr(tag, "libQt5DBus.so")) {
+    patch_native_cursor(handle);
+    return;
+  }
   plthook_t* plt = nullptr;
   if (plthook_open_by_handle(&plt, handle) != PLTHOOK_SUCCESS) {
     hook_log("[plt] open %s failed: %s", tag, plthook_error());
@@ -153,6 +158,13 @@ static void patch_plts_in_handle(void* handle, const char* tag) {
 
 static void try_patch_xcast() {
   std::lock_guard<std::recursive_mutex> lock(g_patch_mu);
+  if (g_native_portal.load() && !native_cursor_ready()) {
+    void* qt = real_dlopen_fn("/usr/libexec/wemeet/lib/libQt5DBus.so.5", RTLD_NOLOAD | RTLD_NOW);
+    if (qt) {
+      patch_native_cursor(qt);
+      dlclose(qt);
+    }
+  }
   if (g_xcast_patched.load()) {
     return;
   }
@@ -171,13 +183,15 @@ static void try_patch_xcast() {
 }
 
 static void* patcher_thread_main(void*) {
-  for (int i = 0; i < 400 && !g_xcast_patched.load(); ++i) {
+  auto ready = [] { return g_xcast_patched.load() && (!g_native_portal.load() || native_cursor_ready()); };
+  for (int i = 0; i < 400 && !ready(); ++i) {
     try_patch_xcast();
-    if (!g_xcast_patched.load()) {
+    if (!ready()) {
       usleep(25000);
     }
   }
-  hook_log("[plt] patcher done patched=%d", g_xcast_patched.load() ? 1 : 0);
+  hook_log("[plt] patcher done patched=%d native_cursor_ready=%d", g_xcast_patched.load() ? 1 : 0,
+           native_cursor_ready());
   return nullptr;
 }
 
@@ -187,7 +201,8 @@ extern "C" void* dlopen(const char* file, int flags) {
     return handle;
   }
   if ((!g_native_portal.load() && std::strstr(file, "libxcast.so")) ||
-      std::strstr(file, "libscreen_share_module.so")) {
+      std::strstr(file, "libscreen_share_module.so") ||
+      (g_native_portal.load() && std::strstr(file, "libQt5DBus.so"))) {
     hook_log("[dlopen] %s handle=%p", file, handle);
     patch_plts_in_handle(handle, file);
   }
@@ -248,7 +263,7 @@ static void wemeet_hook_ctor() {
   setenv("WEMEET_XWAYLAND", "1", 1);
   setenv("XDG_SESSION_TYPE", "x11", 1);
   g_lock_client_env.store(true, std::memory_order_release);
-  hook_log("[chain] mode=%s revision=native-portal-v1 pid=%d wayland_saved=%s",
+  hook_log("[chain] mode=%s revision=native-portal-v2 pid=%d wayland_saved=%s",
            g_native_portal.load() ? "native-portal (X11 image injection disabled)" : "x11-bridge",
            getpid(),
            std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)");
