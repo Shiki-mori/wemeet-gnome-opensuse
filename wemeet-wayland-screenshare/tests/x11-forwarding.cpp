@@ -5,7 +5,9 @@
 #include <sys/shm.h>
 #include <cstdio>
 
-int main() {
+int main(int argc, char**) {
+  const unsigned width = argc > 1 ? 800 : 8;
+  const unsigned height = argc > 1 ? 450 : 8;
   Display* display = XOpenDisplay(nullptr);
   if (!display) return 77;
   const int screen = DefaultScreen(display);
@@ -18,17 +20,17 @@ int main() {
   if (!damage) return 1;
   // Xwayland's invisible root window is not directly readable. A private
   // pixmap tests forwarding without capturing the user's desktop.
-  const Pixmap drawable = XCreatePixmap(display, root, 8, 8, DefaultDepth(display, screen));
+  const Pixmap drawable = XCreatePixmap(display, root, width, height, DefaultDepth(display, screen));
   GC gc = XCreateGC(display, drawable, 0, nullptr);
   XSetForeground(display, gc, 0x123456);
-  XFillRectangle(display, drawable, gc, 0, 0, 8, 8);
-  XImage* image = XGetImage(display, drawable, 0, 0, 8, 8, AllPlanes, ZPixmap);
-  if (!image) return 1;
+  XFillRectangle(display, drawable, gc, 0, 0, width, height);
+  XImage* image = XGetImage(display, drawable, 0, 0, width, height, AllPlanes, ZPixmap);
+  if (!image || XGetPixel(image, width/2, height/2) != 0x123456) return 1;
   XDestroyImage(image);
 
   XShmSegmentInfo shm{};
   image = XShmCreateImage(display, DefaultVisual(display, screen),
-    DefaultDepth(display, screen), ZPixmap, nullptr, &shm, 8, 8);
+    DefaultDepth(display, screen), ZPixmap, nullptr, &shm, width, height);
   if (!image) return 1;
   shm.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0600);
   if (shm.shmid < 0) return 1;
@@ -41,7 +43,8 @@ int main() {
   shm.readOnly = False;
   const Bool attached = XShmAttach(display, &shm);
   XSync(display, False);
-  const Bool captured = attached && XShmGetImage(display, drawable, image, 0, 0, AllPlanes);
+  const Bool captured = attached && XShmGetImage(display, drawable, image, 0, 0, AllPlanes) &&
+                        XGetPixel(image, width/2, height/2) == 0x123456;
   const Bool detached = attached && XShmDetach(display, &shm);
   XSync(display, False);
   shmdt(shm.shmaddr);

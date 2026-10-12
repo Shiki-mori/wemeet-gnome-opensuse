@@ -63,6 +63,7 @@ char* getenv(const char* name);
 
 static std::recursive_mutex g_patch_mu;
 static std::atomic<bool> g_xcast_patched{false};
+static std::atomic<bool> g_native_portal{false};
 
 static bool skip_hook_process() {
   char exe[4096];
@@ -84,15 +85,17 @@ static void* real_dlopen_fn(const char* file, int flags) {
 }
 
 // In this client's screen-share UI, "1" enables its native portal branch.
-// Keep the meeting/platform environment at "1", but route this one module
-// to X11 capture so each shared session is owned by our portal worker.
+// The native experiment leaves this module at "1". The bridge baseline
+// routes it to X11 while keeping the meeting/platform environment at "1".
 static char* screen_share_getenv(const char* name) {
   if (name && std::strcmp(name, "WEMEET_XWAYLAND") == 0) {
-    static char value[] = "0";
+    static char bridge[] = "0";
+    static char native[] = "1";
+    char* value = g_native_portal.load() ? native : bridge;
     static std::atomic<unsigned> queries{0};
     const unsigned query = queries.fetch_add(1) + 1;
     if (query <= 12)
-      hook_log("[route] screen-share WEMEET_XWAYLAND=0 query=%u (meeting/platform remains 1)", query);
+      hook_log("[route] screen-share WEMEET_XWAYLAND=%s query=%u (meeting/platform remains 1)", value, query);
     return value;
   }
   return getenv(name);
@@ -126,6 +129,7 @@ static void patch_plts_in_handle(void* handle, const char* tag) {
   };
   int ok = 0;
   for (const auto& it : items) {
+    if (g_native_portal.load()) break;
     void* oldfn = nullptr;
     int r = plthook_replace(plt, it.name, it.fn, &oldfn);
     if (r == PLTHOOK_SUCCESS) {
@@ -141,7 +145,8 @@ static void patch_plts_in_handle(void* handle, const char* tag) {
   }
   plthook_close(plt);
   if (ok > 0) {
-    if (std::strstr(tag, "libxcast.so")) g_xcast_patched.store(true);
+    if (std::strstr(tag, g_native_portal.load() ? "libscreen_share_module.so" : "libxcast.so"))
+      g_xcast_patched.store(true);
     hook_log("[plt] %s patched %d symbols", tag, ok);
   }
 }
@@ -156,6 +161,7 @@ static void try_patch_xcast() {
     "/usr/libexec/wemeet/bin/modules/screen_share/libscreen_share_module.so",
   };
   for (const char* path : paths) {
+    if (g_native_portal.load() && std::strstr(path, "libxcast.so")) continue;
     void* h = real_dlopen_fn(path, RTLD_NOLOAD | RTLD_NOW);
     if (h) {
       hook_log("[plt] found %s handle=%p", path, h);
@@ -180,7 +186,8 @@ extern "C" void* dlopen(const char* file, int flags) {
   if (skip_hook_process() || !file || !handle) {
     return handle;
   }
-  if (std::strstr(file, "libxcast.so") || std::strstr(file, "libscreen_share_module.so")) {
+  if ((!g_native_portal.load() && std::strstr(file, "libxcast.so")) ||
+      std::strstr(file, "libscreen_share_module.so")) {
     hook_log("[dlopen] %s handle=%p", file, handle);
     patch_plts_in_handle(handle, file);
   }
@@ -217,8 +224,9 @@ extern "C" char* getenv(const char* name) {
   return real(name);
 }
 
-// Snapshot Wayland display for the portal, then hide it from wemeet so
-// 快速会议 does not SIGSEGV in InitWaylandScreenHelper.
+// Snapshot and hide Wayland display while keeping the working X11 meeting
+// environment. The native
+// portal experiment changes only the screen-share module's capture route.
 __attribute__((constructor))
 static void wemeet_hook_ctor() {
   char exe[4096];
@@ -229,6 +237,8 @@ static void wemeet_hook_ctor() {
   if (skip_hook_process()) {
     return;
   }
+  const char* mode = std::getenv("WEMEET_CAPTURE_MODE");
+  g_native_portal.store(mode && std::strcmp(mode, "native-portal") == 0);
   if (const char* wd = std::getenv("WAYLAND_DISPLAY")) {
     if (wd[0]) {
       setenv("WEMEET_HOOK_WAYLAND_DISPLAY", wd, 1);
@@ -238,9 +248,13 @@ static void wemeet_hook_ctor() {
   setenv("WEMEET_XWAYLAND", "1", 1);
   setenv("XDG_SESSION_TYPE", "x11", 1);
   g_lock_client_env.store(true, std::memory_order_release);
-  hook_log("[chain] x11-capture + gnome-portal revision=capture-v4 pid=%d wayland_saved=%s",
+  hook_log("[chain] mode=%s revision=native-portal-v1 pid=%d wayland_saved=%s",
+           g_native_portal.load() ? "native-portal (X11 image injection disabled)" : "x11-bridge",
            getpid(),
            std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)");
+  if (g_native_portal.load())
+    hook_log("[native] portal diagnostic log=%s", std::getenv("WEMEET_NATIVE_PORTAL_LOG") ?
+      std::getenv("WEMEET_NATIVE_PORTAL_LOG") : "not configured by launcher");
   try_patch_xcast();
   pthread_t tid;
   pthread_create(&tid, nullptr, patcher_thread_main, nullptr);
@@ -259,7 +273,7 @@ static std::map<DamageKey, Drawable> g_damage_drawables;
 static std::shared_ptr<CaptureSession> g_capture;
 
 static bool looks_like_screen_grab(unsigned width, unsigned height) {
-  return width >= 640 && height >= 360;
+  return !g_native_portal.load() && width >= 640 && height >= 360;
 }
 
 static void stop_capture(const char* reason, const std::shared_ptr<CaptureSession>& expected = {}) {
@@ -294,7 +308,7 @@ static void reset_finished_capture() {
 }
 
 static std::shared_ptr<CaptureSession> ensure_portal(Display* display, Drawable drawable = None) {
-  if (skip_hook_process()) return {};
+  if (g_native_portal.load() || skip_hook_process()) return {};
   std::shared_ptr<CaptureSession> capture;
   {
     std::lock_guard<std::mutex> lock(g_capture_mu);
@@ -523,7 +537,7 @@ Pixmap XShmCreatePixmap(Display* dpy, Drawable drawable, char* data, XShmSegment
 
 Damage XDamageCreate(Display* dpy, Drawable drawable, int level) {
   Damage damage = XDamageCreateFunc.func ? XDamageCreateFunc(dpy, drawable, level) : None;
-  if (damage && !skip_hook_process()) {
+  if (damage && !g_native_portal.load() && !skip_hook_process()) {
     reset_finished_capture();
     std::lock_guard<std::mutex> lock(g_capture_mu);
     g_damage_drawables[{dpy, damage}] = drawable;

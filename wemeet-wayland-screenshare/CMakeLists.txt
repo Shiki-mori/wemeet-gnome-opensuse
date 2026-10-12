@@ -74,6 +74,13 @@ if(WEMEET_BUILD_TESTS)
   add_test(NAME screen-share-module-routing COMMAND ${CMAKE_COMMAND} -E env
     LD_PRELOAD=$<TARGET_FILE:hook> $<TARGET_FILE:module-routing> $<TARGET_FILE:screen-share-fixture>)
   set_tests_properties(screen-share-module-routing PROPERTIES TIMEOUT 10)
+  add_test(NAME native-portal-module-routing COMMAND ${CMAKE_COMMAND} -E env
+    WEMEET_CAPTURE_MODE=native-portal LD_PRELOAD=$<TARGET_FILE:hook>
+    $<TARGET_FILE:module-routing> $<TARGET_FILE:screen-share-fixture> native)
+  set_tests_properties(native-portal-module-routing PROPERTIES TIMEOUT 10)
+  add_test(NAME native-portal-diagnostics COMMAND ${DBUS_RUN_SESSION} --
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/native-monitor.py)
+  set_tests_properties(native-portal-diagnostics PROPERTIES TIMEOUT 15)
   find_program(XVFB Xvfb)
   if(XVFB)
     add_executable(frame-damage tests/frame-damage.cpp)
@@ -82,5 +89,10 @@ if(WEMEET_BUILD_TESTS)
     add_test(NAME pipewire-frame-damage COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/with-xvfb.py ${XVFB} $<TARGET_FILE:frame-damage>)
     set_tests_properties(pipewire-frame-damage PROPERTIES TIMEOUT 15)
+    add_test(NAME native-portal-no-x11-injection COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/with-xvfb.py ${XVFB}
+      ${CMAKE_COMMAND} -E env WEMEET_CAPTURE_MODE=native-portal LD_PRELOAD=$<TARGET_FILE:hook>
+      $<TARGET_FILE:x11-forwarding> large)
+    set_tests_properties(native-portal-no-x11-injection PROPERTIES TIMEOUT 15)
   endif()
 endif()

@@ -1,12 +1,18 @@
 #!/bin/bash
 # GNOME Wayland launcher for Tencent Meeting.
 # 快速会议 uses official X11 (xcb + WEMEET_XWAYLAND=1) to avoid SIGSEGV.
-# Screen share uses libhook.so, which patches libxcast and talks to
-# xdg-desktop-portal (GNOME picker).
+# Screen share defaults to the client's native portal experiment. Set
+# WEMEET_CAPTURE_MODE=x11-bridge to use the verified capture-v4 bridge.
 
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 HERE=/usr/libexec/wemeet
 HOOK="${ROOT}/libhook.so"
+
+export WEMEET_CAPTURE_MODE="${WEMEET_CAPTURE_MODE:-native-portal}"
+case "$WEMEET_CAPTURE_MODE" in
+  native-portal|x11-bridge) ;;
+  *) echo "未知屏幕共享模式：$WEMEET_CAPTURE_MODE" >&2; exit 1 ;;
+esac
 
 export LC_ALL=zh_CN.UTF-8
 export TZ=Asia/Shanghai
@@ -27,6 +33,15 @@ if [ ! -f "${HOOK}" ]; then
   echo "腾讯会议启动器缺少 ${HOOK}，无法按固定链路共享屏幕。" >&2
   exit 1
 fi
+if [ "$WEMEET_CAPTURE_MODE" = native-portal ]; then
+  export WEMEET_NATIVE_PORTAL_LOG="/tmp/wemeet-native-portal-$$.log"
+  # The launcher execs the client, so its PID remains the monitor's target.
+  # Python uses system libraries and has no preload or capture hooks.
+  env -u LD_PRELOAD -u LD_LIBRARY_PATH /usr/bin/python3 \
+    "${ROOT}/wemeet-wayland-screenshare/native-portal-monitor.py" \
+    --pid "$$" --log "$WEMEET_NATIVE_PORTAL_LOG" >/dev/null 2>&1 &
+fi
+
 export LD_PRELOAD="${HOOK}${LD_PRELOAD:+:${LD_PRELOAD}}"
 
 if [ -n "${XMODIFIERS}" ]; then

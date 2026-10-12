@@ -20,11 +20,17 @@
 - 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
 - `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
 
-## 当前启动设置与钩子设计（capture-v4，本机已验证可正常运行）
+## 当前版本：native-portal-v1 实验；capture-v4 为功能对照基线
+
+当前启动器默认使用 `WEMEET_CAPTURE_MODE=native-portal`，共享模块读取 `WEMEET_XWAYLAND=1`，使用客户端自带的门户/PipeWire；钩子不替换其 X11 截图 PLT、不启动自己的门户、不注入像素或发送 XDamage 通知。开会环境仍为 xcb/x11/WEMEET_XWAYLAND=1，WAYLAND_DISPLAY 仍隐藏。
+
+需要对照此前桥接方式时，彻底退出客户端后运行 `WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp`。下面的六步链路描述该桥接模式，而不是原生实验模式。native-portal-v1 尚待真实会议验证，未宣称解决原生路径此前的停止/重试失败。
 
 2026-10-12 用户实测确认：GNOME 选屏正常、选屏后画面持续更新、停止后再次共享能够重新选屏并正常更新。将此版本标记为本机可正常运行的基线，Git 标签为 `capture-v4-working`。对应运行库 SHA-256 为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`。
 
-从应用菜单启动 `wemeetapp`。启动器目前把客户端环境设置为 X11，钩子的目标链路如下；客户端是否实际进入这条链路，需要按每次运行的日志确认。历史记录中也有客户端自身 `ext_portal` 路径成功送帧的情况。
+随后用户补充：对端画面卡顿严重，鼠标移动有跟随残影。因此该标签表示选屏、持续更新及重复共享功能已验证，不表示流畅度或光标处理已经合格。当前存在已知性能与光标问题，后续修改需保留此功能基线作对照。
+
+启动器把客户端开会环境设置为 X11。桥接模式的目标链路如下；客户端是否实际进入这条链路，需要按每次运行的日志确认。历史记录中也有客户端自身 `ext_portal` 路径成功送帧的情况。
 
 1. `WEMEET_XWAYLAND=1`，`XDG_SESSION_TYPE=x11`，`QT_QPA_PLATFORM=xcb`。
    这个版本的屏幕共享模块用 `WEMEET_XWAYLAND == "1"` 选择客户端自身门户。capture-v3 起单独替换 `libscreen_share_module.so` 的 `getenv` PLT，使该模块读取此变量为 `"0"`；开会和平台部分仍读取 `"1"`。实际日志已观察到多轮钩子门户启动、首帧和停止清理，但 capture-v3 对端画面冻结。
@@ -73,7 +79,7 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 
 正在运行的腾讯会议不会加载新的 `libhook.so`。先彻底退出（包括托盘），再从应用菜单打开。
 
-调试日志在 `/tmp/wemeet-hook.log`，当前日志带时间和进程号，新启动记录包含 `revision=capture-v4`。只有启动或补丁记录，表示尚未观察到钩子的门户启动；需与同次客户端日志交叉检查，不能单凭日志缺失判断根因。
+调试日志在 `/tmp/wemeet-hook.log`，当前实验启动记录包含 `revision=native-portal-v1` 及所选 mode。原生模式只调整共享模块路由，不应出现钩子的 `[portal]` 首帧或 `[damage]` 通知；客户端门户诊断在 `/tmp/wemeet-native-portal-进程号.log`，具体路径也写入钩子启动日志。只有启动或补丁记录时，需与同次客户端和门户诊断交叉检查，不能单凭日志缺失判断根因。
 
 - `[portal] session created`：门户会话已创建，尚不代表已选屏或已采集。
 - `[route] screen-share getenv PLT replace result=0`：模块局部路由替换成功；`[route] screen-share WEMEET_XWAYLAND=0` 表明该模块实际查询了路由变量。
@@ -114,6 +120,27 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 - 增加接受帧/图像读取/通知计数及门户 source_type 日志。新增独立 Xvfb 检查完整脏区域、重复序号过滤和桌面像素不变；像素检查覆盖后续帧替换。用户随后确认实际会议可选屏、画面持续更新，停止后再次共享也能重新选屏并正常更新；跨窗口光标没有单独反馈，不扩大验证结论。
 - capture-v4 已在实际运行目录编译、通过五项回归检查并原子安装。安装库与构建产物 SHA-256 均为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`；capture-v3 源码与库备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-215400-before-capture-v4`。运行中的旧进程需要完全退出后重新启动。
 - 2026-10-12 按用户验证结果将 capture-v4 标记为可正常运行版本，Git 标签 `capture-v4-working`。后续排查可用该版本作为本机对照基线；历史失败观察和未覆盖场景仍保留，不能据此保证其他机器或未来客户端版本的行为。
+- 随后反馈卡顿与鼠标残影。PID 158140 的客户端日志记录屏幕更新约 4.85—14.93 fps，钩子接受帧和客户端读取序号持续前进。低更新率出现在发送端，尚未排除网络、接收端或静止场景正常降帧的影响。20 fps 硬性丢帧限制继承自旧钩子，工作线程每 16 ms 轮询，频繁来帧时可能形成约 64 ms 的接受间隔；还需测量帧时间及各阶段耗时。
+- 当前门户请求 `XDP_CURSOR_MODE_EMBEDDED`，客户端日志同时有独立 32×32 X11 光标更新。两套光标时序不一致是鼠标残影的重点候选原因，尚未通过关闭其中一条路径做对照实验。每帧全屏 XDamage 通知及 CPU 图像复制/缩放也可能增加负担，不能直接认定它们是严重卡顿的唯一原因。
+
+## 2026-10-12 原生 ext_portal 路径的可行性评估（切换前的分析记录）
+
+- `ext_portal` 是客户端内部的外部视频设备名。屏幕共享模块自带 GNOME 门户与 PipeWire 助手，采集后向该设备送帧；不能仅因日志出现设备名就认定已经采集，也不能据此声称原生链路零拷贝或没有帧率限制。
+- 21:09:36 首次共享有 ext_portal 启动及 1920×1080 编码首帧；21:10:26 设备停止；21:11:03 重试只配置 Display_0，没有再次启动 ext_portal。这支持客户端重启状态或门户会话生命周期的假设，尚未证明具体原因。此次成功使用 capture-v2 的 X11 开会环境，说明无需先把全进程改回 Wayland 才能试验原生共享。
+- 只读检查找到当前共享模块的 Qt D-Bus CreateSession、SelectSources、Start、OpenPipeWireRemote、Close、Closed 处理代码。存在关闭代码不证明停止时实际执行了它；不能直接判定客户端缺少清理。部分应用日志为加密格式，现有明文日志不足以确认每轮 D-Bus 请求。
+- 可回滚的原生模式应保留开会环境 xcb/x11/WEMEET_XWAYLAND=1，让共享模块读取路由变量为 1，并停用钩子的 X11 像素注入及 XDamage 通知，避免两套采集并行。先使用独立实验入口和带诊断的最小钩子，当前 capture-v4-working 继续作为功能对照。
+- 重点捕捉首次、停止及第二次共享的客户端与门户请求：没有新 CreateSession 则查客户端控制状态；复用旧 handle/重复 Start 则查会话重建；门户新会话和 PipeWire 成功却没有 ext_portal 启动/首帧，则查客户端送帧和设备重新绑定。门户规范每个会话只允许一次 SelectSources/Start，关闭的会话不能当作可重新启动的实例；保留权限的 restore_token 也不等于复用旧会话。
+- 先定位失败阶段，再决定是否通过最小兼容钩子修复。若需要修改闭源对象私有状态或依赖函数偏移，需校验客户端版本与库指纹，维护成本会高于标准 API 的兼容修复。重启整个客户端可作为诊断对照，不能当成连续稳定共享的证明。
+- 原生路线有望省去当前钩子的额外图像转换、X11 截图及全屏变化通知，也值得验证光标时序，但此前原生设备日志同样配置过 15/20 fps，性能收益尚需同场景实测。验收应覆盖多轮共享/停止、取消选屏后重试、重新入会、持续画面与鼠标残影，以及关闭后门户/PipeWire 资源释放；本轮仅做可行性分析，未改变实际运行链路。
+
+## 2026-10-12 native-portal-v1 原生路径实验
+
+- 原生模式只对共享模块的 getenv PLT 做路由诊断，返回 WEMEET_XWAYLAND=1；同时在全局截图包装函数中禁止触发桥接采集，避免深绑定或其他调用路径启动第二套门户。未修补闭源库的函数偏移、对象状态或客户端安装文件。
+- 启动器默认选原生实验，可通过 WEMEET_CAPTURE_MODE=x11-bridge 回到桥接对照。动态库未指定 mode 时仍默认桥接，供现有直接加载场景和回归检查使用。
+- 独立 Python/PyGObject 进程以启动器 exec 后保持的客户端 PID 为过滤目标，使用 D-Bus BecomeMonitor 只读观察门户。仅记录该 PID 的 ScreenCast 请求/回复、Response 和 Session Closed，省略 restore_token 内容，不采集屏幕，不关闭或修改客户端会话。随着目标进程退出结束；若权限或服务不可用则单独记录 MONITOR_UNAVAILABLE，不阻塞客户端。
+- 监视器过滤回调先将消息交给自己的主循环处理，再丢弃旁观的方法调用，避免 GDBus 自动回复 UnknownMethod 导致监视连接被总线关闭。PID 查询使用另一个控制连接，不在 GDBus I/O 线程上同步等待。
+- 新增模拟共享模块的原生路由检查、独立 Xvfb 上的大图像转调检查，以及私有 D-Bus 上两轮创建/选源/启动/关闭诊断检查，覆盖取消、流信息和其他 PID 排除。本机只读探针已确认监视连接能启动。真实原生共享的流畅度、光标以及连续重启结果仍需用户测试。
+- native-portal-v1 已同步到实际运行目录，完成编译并通过全部八项回归检查，随后安装库和启动器。安装库与运行目录构建产物的 SHA-256 均为 `2ec3df34fff1c94f37cbdf2df9b283621ec096fb65f264d86864820104e52bc5`。原 capture-v4 库、启动器及被更新源码备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-223937-before-native-portal-v1`。需彻底退出旧进程，再从菜单启动实验。
 
 ## 许可
 
