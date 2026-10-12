@@ -20,15 +20,17 @@
 - 实际使用的钩子源码在 `/home/phrolova/Applications/TencentMeeting/wemeet-wayland-screenshare`。修改后必须在这里编译，把生成的 `libhook.so` 安装到 `/home/phrolova/Applications/TencentMeeting/libhook.so`，下次启动才会生效。
 - `/home/phrolova/Applications/wemeet-gnome-opensuse` 是推到 GitHub 的副本，启动器不会读取它。只更新这里的源码不会改变实际运行的腾讯会议；需要让运行目录中的源码包含相应修改，再在那里编译、安装并重启。
 
-## 当前版本：native-portal-v2 光标修复；native-portal-v1 已验证画面与重复共享
+## 当前可用版本：native-portal-v2-working
+
+2026-10-12 用户完成 native-portal-v2 测试并反馈「测试没有问题」，将其标记为本机可用版本，Git 标签为 `native-portal-v2-working`。源码修复提交为 `0321fca`，实际运行库 SHA-256 为 `b5afd664d6042a5435ee64545a8d9d07f7a7a3583e0bf105a5ac6cdd2be1ed35`。后续修改优先以此原生共享版本作为对照基线。
 
 当前启动器默认使用 `WEMEET_CAPTURE_MODE=native-portal`，共享模块读取 `WEMEET_XWAYLAND=1`，使用客户端自带的门户/PipeWire；钩子不替换其 X11 截图 PLT、不启动自己的门户、不注入像素或发送 XDamage 通知。native-portal-v2 在 Qt D-Bus 的发送 PLT 上将原生 SelectSources 请求的 cursor_mode 改为 2，使鼠标嵌入画面；其他请求、门户选项与会话生命周期继续由客户端处理。开会环境仍为 xcb/x11/WEMEET_XWAYLAND=1，WAYLAND_DISPLAY 仍隐藏。
 
-需要对照此前桥接方式时，彻底退出客户端后运行 `WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp`。下面的六步链路描述该桥接模式，而不是原生模式。用户已验证 native-portal-v1 除对端不可见鼠标之外其他功能正常；native-portal-v2 的鼠标显示效果待验证。
+需要对照此前桥接方式时，彻底退出客户端后运行 `WEMEET_CAPTURE_MODE=x11-bridge /home/phrolova/Applications/TencentMeeting/wemeetapp`。下面的六步链路描述该桥接模式，而不是原生模式。用户已验证 native-portal-v1 除对端不可见鼠标之外其他功能正常，随后测试 native-portal-v2 并确认没有问题。
 
 2026-10-12 用户实测确认：GNOME 选屏正常、选屏后画面持续更新、停止后再次共享能够重新选屏并正常更新。将此版本标记为本机可正常运行的基线，Git 标签为 `capture-v4-working`。对应运行库 SHA-256 为 `7767319c37e9915d5b4b95188990cd533db61f4ccc6e7c6572b332e659a59a99`。
 
-随后用户补充：对端画面卡顿严重，鼠标移动有跟随残影。因此该标签表示选屏、持续更新及重复共享功能已验证，不表示流畅度或光标处理已经合格。当前存在已知性能与光标问题，后续修改需保留此功能基线作对照。
+随后用户补充：对端画面卡顿严重，鼠标移动有跟随残影。因此该桥接标签表示选屏、持续更新及重复共享功能已验证，不表示流畅度或光标处理已经合格。该桥接版本存在已知性能与光标问题，保留为历史对照；当前可用基线为 native-portal-v2-working。
 
 启动器把客户端开会环境设置为 X11。桥接模式的目标链路如下；客户端是否实际进入这条链路，需要按每次运行的日志确认。历史记录中也有客户端自身 `ext_portal` 路径成功送帧的情况。
 
@@ -148,8 +150,9 @@ install -m 0755 build/libhook.so /home/phrolova/Applications/TencentMeeting/libh
 - 只读检查发现原生助手内部 cursor_visible 参数开启时会请求 2，但没有确认 Linux 界面中存在可操作的设置入口。不要将内部参数描述成已找到的菜单选项。
 - 在原生模式对已加载 Qt5DBus 库的 dbus_connection_send / send_with_reply PLT 做局部替换。仅处理发往 org.freedesktop.portal.Desktop、路径 /org/freedesktop/portal/desktop、接口 ScreenCast、方法 SelectSources、签名 oa{sv} 且尚未发送的请求；将合法 uint32 光标模式改为 2，缺省隐藏时补入该字段。已为 2 的请求、格式不合法的字段、其他接口或路径及桥接模式正常转调。
 - 用 libdbus 标准 API 复制请求并递归保留其他选项、嵌套值、标志和 Unix FD，发送后将序号及锁定状态传回原消息，保持 Qt 回复关联。读取 Unix FD 时释放 API 返回的副本。原函数从提供者导出符号解析，不使用未绑定 PLT 跳板，不修改腾讯客户端文件或私有对象状态。
-- 新增自建 Qt 形状的动态库及私有 D-Bus 回归检查，覆盖两种发送 API、字段缺省/已设定/类型不合法、非目标路径、模块外直接发送、桥接模式、其他选项、文件描述符及请求回复序号。全部十项检查通过；本机实际 Qt5DBus 库的只读加载探针也确认挂钩 ready=1。真实对端鼠标显示、拖影与重复共享仍需用户验证。
+- 新增自建 Qt 形状的动态库及私有 D-Bus 回归检查，覆盖两种发送 API、字段缺省/已设定/类型不合法、非目标路径、模块外直接发送、桥接模式、其他选项、文件描述符及请求回复序号。全部十项检查通过；本机实际 Qt5DBus 库的只读加载探针也确认挂钩 ready=1。用户随后完成实际测试并反馈没有问题。
 - native-portal-v2 已在实际运行目录编译、通过十项检查并安装；源码副本与安装库均已核对。库 SHA-256 为 `b5afd664d6042a5435ee64545a8d9d07f7a7a3583e0bf105a5ac6cdd2be1ed35`，native-portal-v1 的库与被修改源码备份位于 `/home/phrolova/Applications/TencentMeeting/backups/20261012-231243-before-native-portal-v2`。安装后的库加载实际 Qt5DBus 探针也确认挂钩成功；需重新启动客户端加载新库。
+- 按本轮用户测试结果标记 Git 标签 `native-portal-v2-working`，作为当前本机可用版本；保留旧 `capture-v4-working` 标签的历史记录，不覆盖它。
 
 ## 许可
 
