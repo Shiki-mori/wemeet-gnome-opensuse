@@ -14,6 +14,23 @@
 
 `libhook.so` 必须和 `wemeetapp` 放在同一目录。启动器找不到它就退出。
 
+## 遇到过的问题
+
+这些问题都在这台机器上出现过。现象相同时，先对照原因，不要换一条采集路径再试。
+
+- **官方启动脚本在 Wayland 下伪装成 X11。** 它设置 `WEMEET_XWAYLAND=1`、`XDG_SESSION_TYPE=x11`，并清掉 `WAYLAND_DISPLAY`。麦克风和摄像头正常，屏幕共享走 X11 截图，看不见 Wayland 窗口，也没有 GNOME 选屏。
+- **保留 Wayland 会话可以共享，但重启后快速会议闪退。** 2026-08-31 用 `XDG_SESSION_TYPE=wayland` 且不设置 `WEMEET_XWAYLAND` 时，快速会议、麦克风、摄像头和 GNOME 选屏都可用。BIOS 升级并重启后，快速会议在 `libwemeet_framework.so` 里 SIGSEGV，偏移每次都是 `+0x13d4300`。之后只有官方 X11 路径能开会。
+- **`xwaylandvideobridge` 会把桌面涂黑。** 选屏不稳定，未最大化窗口周围的桌面变黑。自启必须用 `~/.config/autostart/org.kde.xwaylandvideobridge.desktop` 里的 `Hidden=true` 关掉。
+- **普通 `LD_PRELOAD` 拦不住 `libxcast.so`。** 它是 `libwemeet_platform.so` 的依赖，X11 函数从它自己的 PLT 绑定。日志里只有 `[ctor]`、没有截屏调用时，就是没补上 PLT。要用 `plthook` 替换 `libxcast.so` 的 PLT。
+- **拦截全部 `dlopen` 会让网页进程崩。** `QtWebEngineProcess` 收到 SIGTRAP。构造函数发现可执行文件名里有 `QtWebEngineProcess` 时必须直接返回。
+- **把 `XDamageQueryExtension` 固定返回 0 会让截图初始化退出。** 这个版本不会因此改走 `XGetImage`。`XDamageCreate` 返回空也一样。
+- **把 PLT 跳板当成原函数会让 `XShmQueryVersion` 死循环。** 补丁读到的旧地址是 `plt+6`，尾调用又回到钩子自己。CPU 打满，`/tmp/wemeet-hook.log` 曾写到约 1.9 GB。原函数必须用 `dlsym(RTLD_NEXT)`。
+- **对屏幕共享模块隐藏 `WEMEET_XWAYLAND` 会得到空白共享。** 客户端立刻显示「正在共享」，不弹 GNOME 选屏。日志里 `Display_0` 被设成 `external:true`，没有画面送出。第二次再共享也不会再弹选屏。
+- **门户请求发到错误的线程上时，选屏不会出现。** 采集停在 `screen_capture_linux.cc` 的 `init.enter`，没有 `init.leave`。会话要在钩子自己的 `GMainContext` 里创建，创建完成后再 `xdp_session_start`。
+- **选完屏幕后对方仍看到空白。** 一种情况是客户端已经改走外部采集，X11 截图不再被编码。另一种是钩子在 PipeWire 第一帧到达前把截图涂成黑色。`pipewire_fd` 必须在节点号填完之后再发布，否则 `pipewire_node_ids.at(0)` 会抛异常，会话留在半初始化状态，下一次共享不再弹选屏。
+- **同一次安装会走出不同的路。** 2026-10-08 面试时走的是官方 `ext_portal`，约 5 秒后开始有画面，X11 截图线程没有启动。2026-10-12 点共享后只把 `Display_0` 配到「已配置、未开始」，没有 `init.enter`，也没有切到 `ext_portal`，钩子日志里只有补丁记录。这不是补丁被冲掉，是闭源模块当次没有调用截图函数。
+- **应用菜单里找不到腾讯会议。** 桌面文件加了 `TryExec`，GNOME 在启动器还不可执行时检查过一次，就把图标从列表里拿掉，之后不会自动恢复。菜单文件不要写 `TryExec`。
+
 ## 不要再做的事
 
 - 不要对屏幕共享模块隐藏 `WEMEET_XWAYLAND`，也不要让它看到 `WAYLAND_DISPLAY`。那样会立刻显示「正在共享」、不弹选屏、画面全黑。
