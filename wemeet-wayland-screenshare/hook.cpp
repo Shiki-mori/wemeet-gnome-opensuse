@@ -47,6 +47,7 @@ Pixmap XShmCreatePixmap(Display* dpy, Drawable d, char* data, XShmSegmentInfo* s
 Damage XDamageCreate(Display* dpy, Drawable drawable, int level);
 void XCompositeRedirectWindow(Display* dpy, Window window, int update);
 void* dlopen(const char* file, int flags);
+char* getenv(const char* name);
 }
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
@@ -204,6 +205,37 @@ extern "C" void* dlopen(const char* file, int flags) {
   return handle;
 }
 
+// After startup, every library in this process must keep seeing the X11
+// meeting path. The screen-share module switches to a blank external
+// capture when it observes a Wayland session.
+static std::atomic<bool> g_lock_client_env{false};
+
+extern "C" char* getenv(const char* name) {
+  using Fn = char*(const char*);
+  static Fn* real = nullptr;
+  if (!real) {
+    real = reinterpret_cast<Fn*>(dlsym(RTLD_NEXT, "getenv"));
+  }
+  if (!real) {
+    return nullptr;
+  }
+  if (!g_lock_client_env.load(std::memory_order_acquire) || skip_hook_process() || !name) {
+    return real(name);
+  }
+  if (std::strcmp(name, "WEMEET_XWAYLAND") == 0) {
+    static char value[] = "1";
+    return value;
+  }
+  if (std::strcmp(name, "XDG_SESSION_TYPE") == 0) {
+    static char value[] = "x11";
+    return value;
+  }
+  if (std::strcmp(name, "WAYLAND_DISPLAY") == 0) {
+    return nullptr;
+  }
+  return real(name);
+}
+
 // Snapshot Wayland display for the portal, then hide it from wemeet so
 // 快速会议 does not SIGSEGV in InitWaylandScreenHelper.
 __attribute__((constructor))
@@ -222,12 +254,12 @@ static void wemeet_hook_ctor() {
     }
   }
   unsetenv("WAYLAND_DISPLAY");
-  hook_log("[ctor] loaded pid=%d exe=%s wayland_saved=%s display=%s session=%s",
+  setenv("WEMEET_XWAYLAND", "1", 1);
+  setenv("XDG_SESSION_TYPE", "x11", 1);
+  g_lock_client_env.store(true, std::memory_order_release);
+  hook_log("[chain] x11-capture + gnome-portal pid=%d wayland_saved=%s",
            getpid(),
-           n > 0 ? exe : "?",
-           std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)",
-           std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(none)",
-           std::getenv("XDG_SESSION_TYPE") ? std::getenv("XDG_SESSION_TYPE") : "(none)");
+           std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") ? std::getenv("WEMEET_HOOK_WAYLAND_DISPLAY") : "(none)");
   try_patch_xcast();
   pthread_t tid;
   pthread_create(&tid, nullptr, patcher_thread_main, nullptr);

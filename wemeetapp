@@ -22,10 +22,12 @@ case "${DISPLAY:-}" in
 esac
 
 # Keep WAYLAND_DISPLAY for libhook.so's constructor; it snapshots the
-# value for the portal, then unsets it so wemeet does not SIGSEGV.
-if [ -f "${HOOK}" ]; then
-  export LD_PRELOAD="${HOOK}${LD_PRELOAD:+:${LD_PRELOAD}}"
+# value for the portal, then hides Wayland from the rest of the process.
+if [ ! -f "${HOOK}" ]; then
+  echo "腾讯会议启动器缺少 ${HOOK}，无法按固定链路共享屏幕。" >&2
+  exit 1
 fi
+export LD_PRELOAD="${HOOK}${LD_PRELOAD:+:${LD_PRELOAD}}"
 
 if [ -n "${XMODIFIERS}" ]; then
   export QT_IM_MODULE="${XMODIFIERS#*=}"
