@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=WemeetApp (Vendor X11)
+Name[zh_CN]=腾讯会议（官方 X11 启动）
+Comment=Vendor launcher that forces XWayland (screen share usually broken on GNOME Wayland)
+Comment[zh_CN]=官方启动器（强制 XWayland，GNOME 下屏幕共享通常不可用）
+Exec=/usr/bin/wemeetapp %u
+TryExec=/usr/bin/wemeetapp
+Icon=wemeetapp
+Type=Application
+Terminal=false
+NoDisplay=true
+Categories=AudioVideo;Recorder;VideoConference;

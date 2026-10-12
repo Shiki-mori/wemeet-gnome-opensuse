@@ -1,0 +1,34 @@
+#!/bin/bash
+# GNOME Wayland launcher for Tencent Meeting.
+# 快速会议 uses official X11 (xcb + WEMEET_XWAYLAND=1) to avoid SIGSEGV.
+# Screen share uses libhook.so, which patches libxcast and talks to
+# xdg-desktop-portal (GNOME picker).
+
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+HERE=/usr/libexec/wemeet
+HOOK="${ROOT}/libhook.so"
+
+export LC_ALL=zh_CN.UTF-8
+export TZ=Asia/Shanghai
+export PATH="${HERE}/bin${PATH:+:$PATH}"
+export LD_LIBRARY_PATH="${HERE}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="${HERE}/plugins"
+
+export QT_QPA_PLATFORM=xcb
+export XDG_SESSION_TYPE=x11
+export WEMEET_XWAYLAND=1
+case "${DISPLAY:-}" in
+  ''|wayland*|unix:*) export DISPLAY=:0 ;;
+esac
+
+# Keep WAYLAND_DISPLAY for libhook.so's constructor; it snapshots the
+# value for the portal, then unsets it so wemeet does not SIGSEGV.
+if [ -f "${HOOK}" ]; then
+  export LD_PRELOAD="${HOOK}${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+
+if [ -n "${XMODIFIERS}" ]; then
+  export QT_IM_MODULE="${XMODIFIERS#*=}"
+fi
+
+exec "${HERE}/bin/wemeetapp" "$@"

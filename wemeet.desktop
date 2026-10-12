@@ -1,0 +1,21 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Name=腾讯会议
+Name[zh_CN]=腾讯会议
+Name[zh_TW]=騰訊會議
+Name[en]=Tencent Meeting
+Comment=Tencent Meeting Linux Client (Wayland portal screenshare)
+Comment[zh_CN]=腾讯会议Linux客户端（Wayland 屏幕共享）
+Comment[zh_TW]=騰訊會議Linux客戶端
+Keywords=meeting;conference;tencent;wemeet;video;腾讯会议;腾讯;会议;
+Keywords[zh_CN]=会议;腾讯;视频;腾讯会议;
+Keywords[zh_TW]=會議;騰訊;視頻;
+Exec=/home/phrolova/Applications/TencentMeeting/wemeetapp %u
+Icon=wemeetapp
+Type=Application
+Terminal=false
+StartupNotify=true
+StartupWMClass=wemeetapp
+Categories=Network;AudioVideo;Office;VideoConference;
+MimeType=x-scheme-handler/wemeet;
+X-GNOME-SingleWindow=true
